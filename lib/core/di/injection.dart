@@ -1,5 +1,6 @@
 import 'package:get_it/get_it.dart';
 
+import '../../features/access/domain/access_admin.dart';
 import '../../features/biometric/data/biometric_auth_service.dart';
 import '../../features/device/data/ble_lock_data_source.dart';
 import '../../features/device/domain/lock_status.dart';
@@ -30,6 +31,7 @@ void configureDependencies() {
     ..registerFactory(() => ReadLockStatus(sl(), sl()))
     ..registerFactory(() => LockNow(sl(), sl()))
     ..registerFactory(() => PairLock(sl(), sl(), sl()))
+    ..registerFactory(() => AccessAdmin(sl(), sl(), sl()))
     // presentation
     ..registerFactory(() => ScanCubit(sl()))
     ..registerFactory(() => DeviceCubit(sl(), sl(), sl(), sl()))

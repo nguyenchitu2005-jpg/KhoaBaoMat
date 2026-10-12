@@ -3,6 +3,9 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/di/injection.dart';
+import '../../access/presentation/access_page.dart';
+import '../../access/presentation/logs_page.dart';
+import '../../biometric/data/biometric_auth_service.dart';
 import '../../unlock/presentation/unlock_button.dart';
 import '../domain/lock_status.dart';
 import 'device_cubit.dart';
@@ -25,6 +28,17 @@ class DevicePage extends StatelessWidget {
 class _DeviceView extends StatelessWidget {
   const _DeviceView({required this.device});
   final BluetoothDevice device;
+
+  /// Trang quản lý của admin: xác thực sinh trắc học trước khi mở (như khi mở cửa).
+  Future<void> _openAdmin(BuildContext context, Widget page) async {
+    final bio = await sl<BiometricAuthService>().authenticate('Xác thực để quản lý khoá');
+    if (!context.mounted) return;
+    if (bio != BiometricOutcome.success) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(bio.message)));
+      return;
+    }
+    await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -84,6 +98,28 @@ class _DeviceView extends StatelessWidget {
                   icon: const Icon(Icons.lock_rounded),
                   label: const Text('Khoá ngay'),
                 ),
+                if (s.status?.isAdmin ?? false) ...[
+                  const SizedBox(height: 24),
+                  Card(
+                    child: Column(
+                      children: [
+                        ListTile(
+                          leading: const Icon(Icons.admin_panel_settings_rounded),
+                          title: const Text('Quản lý truy cập'),
+                          subtitle: const Text('Thẻ, vân tay, mã PIN'),
+                          trailing: const Icon(Icons.chevron_right_rounded),
+                          onTap: () => _openAdmin(context, AccessPage(lockId: device.remoteId.str)),
+                        ),
+                        ListTile(
+                          leading: const Icon(Icons.history_rounded),
+                          title: const Text('Nhật ký'),
+                          trailing: const Icon(Icons.chevron_right_rounded),
+                          onTap: () => _openAdmin(context, LogsPage(lockId: device.remoteId.str)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ],
           ),

@@ -23,7 +23,13 @@ class SecureCommandSender {
   final LockKeyStore _keys;
   final LockCrypto _crypto;
 
-  Future<Uint8List> send(LockCredential cred, int cmd, {List<int> payload = const []}) async {
+  /// [timeout]: thời gian chờ phản hồi của lệnh (lệnh đăng ký thẻ / vân tay phải chờ người dùng thao tác).
+  Future<Uint8List> send(
+    LockCredential cred,
+    int cmd, {
+    List<int> payload = const [],
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
     // 1. Xin nonce dùng 1 lần (chống phát lại gói cũ)
     final challenge = await _ble.request(
       [FrameKind.challengeRequest, cred.keyId],
@@ -44,6 +50,7 @@ class SecureCommandSender {
     final reply = await _ble.request(
       [FrameKind.sealedCommand, ...sealed],
       replyKinds: {FrameKind.sealedReply},
+      timeout: timeout,
     );
 
     // 3. Phản hồi: [cmd][result][counter 4B][payload…] – phải khớp lệnh vừa gửi

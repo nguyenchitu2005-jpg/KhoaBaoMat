@@ -15,7 +15,7 @@ Tài liệu liên quan:
 | 0 | Cài công cụ, driver, kiểm tra từng linh kiện | ✅ Xong |
 | 1 | BLE + relay + app quét, kết nối, mở khoá | ✅ Xong, đã test trên laptop và điện thoại |
 | 2 | Ghép đôi an toàn (X25519 + mã 6 số trên bàn phím) | ✅ Xong, đã test trên laptop và điện thoại |
-| 3 | RFID, PIN, vân tay, nút trong nhà, nhật ký, lệnh quản lý, trang app | 🟡 Đang làm (firmware khoảng 40%) |
+| 3 | RFID, PIN, vân tay, nút trong nhà, nhật ký, lệnh quản lý, trang app | 🟡 Đã nạp và test trên khoá thật: ghép đôi, PIN, vân tay, thẻ đều đạt. Còn vài mục chưa thử (xem mục 6) |
 | 4 | Thành viên, mã khách TOTP | ⬜ Chưa làm |
 
 ---
@@ -26,17 +26,35 @@ Tài liệu liên quan:
 |---|---|
 | arduino-cli | 1.5.1 |
 | Lõi ESP32 | esp32:esp32 3.3.12. FQBN `esp32:esp32:esp32:PartitionScheme=huge_app` |
-| Driver USB | CP210x 11.5.0.417 (chip CP2102), cổng **COM3** |
+| Driver USB | CP210x 11.5.0.417 (chip CP2102), cổng **COM5** |
 | ESP32 | ESP32-D0WD-V3, không có PSRAM, MAC `b0:3f:d3:7c:60:64` |
 | Flutter / Dart | 3.47.3 / 3.13.3 |
 | Gói Flutter chính | flutter_blue_plus 2.3.14, local_auth 3.0.2, flutter_secure_storage 11.2.0, cryptography 2.9.0, flutter_bloc 9.1.1, equatable 3.0.0, get_it 9.3.0 |
 | Gói test | bloc_test, mocktail, integration_test |
 
-Lệnh nạp firmware:
+Bộ công cụ ESP32 nằm ở `D:\arduino-data` (ổ C không đủ chỗ), dùng `arduino-cli` 1.3.1 đi kèm Arduino IDE. Thư viện: MFRC522 1.4.12, Adafruit Fingerprint Sensor Library 2.1.4.
 
-```bash
-arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app --upload -p COM3 firmware/smart_lock
+Lệnh nạp firmware (PowerShell):
+
+```powershell
+$env:ARDUINO_DIRECTORIES_DATA = "D:\arduino-data\data"
+$env:ARDUINO_DIRECTORIES_DOWNLOADS = "D:\arduino-data\staging"
+$env:ARDUINO_DIRECTORIES_USER = "D:\arduino-data\user"
+$cli = "$env:LOCALAPPDATA\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe"
+& $cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app --build-path D:\arduino-data\build\smart_lock --upload -p COM5 firmware/smart_lock
 ```
+
+Cổng hiện là **COM5** (sau khi cài lại driver CP210x 11.5.0.417 từ Microsoft Update Catalog; bản lưu ở `D:\arduino-data\cp210x`).
+
+Build và cài app lên điện thoại (biến `ANDROID_HOME` của máy trỏ sai, phải đặt lại trong phiên):
+
+```powershell
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+flutter build apk --release
+& "$env:ANDROID_HOME\platform-tools\adb.exe" install -r build\app\outputs\flutter-apk\app-release.apk
+```
+
+Điện thoại OPPO phải bật "Cài đặt qua USB" trong Tuỳ chọn nhà phát triển, nếu không adb báo `Failure [-99]`.
 
 ---
 
@@ -120,21 +138,35 @@ Bản test tổng hợp `firmware/hardware_test` có bảo vệ relay: đóng t�
   - Bộ đệm vòng 500 bản ghi × 16 byte trong LittleFS (`/log.bin`).
   - Giờ thật được đồng bộ từ lệnh của app. Khi chưa đồng bộ thì ghi số giây kể từ lúc khởi động.
 
+- [smart_lock.ino](firmware/smart_lock/smart_lock.ino) (12/10/2026, biên dịch đạt: 1.223.826 byte = 38% flash, RAM 13%):
+  - Thẻ RFID: thẻ đã đăng ký thì mở cửa; thẻ lạ thì nháy LED đỏ và ghi UID vào nhật ký.
+  - Vân tay: dò mỗi 300 ms (`FP_POLL_MS`). Thẻ dò mỗi 100 ms (`RFID_POLL_MS`). Tạm ngừng dò khi đang gõ bàn phím.
+  - PIN: gõ rồi bấm `#`, `*` để xoá. Sai 5 lần thì khoá bàn phím 5 phút (bộ đếm sai chỉ nằm trong RAM).
+  - Ghi nhật ký mọi lần mở và thử sai. Đồng bộ giờ từ mỗi lệnh mã hoá.
+  - Lệnh từ `0x20` trở lên chỉ dành cho admin, máy khác nhận `0x03`.
+  - Đăng ký vân tay gửi thêm gói tiến trình không mã hoá `[0x86][cmd][bước]` (1 = nhấc tay, 2 = đặt lại).
+  - `STATUS` trả thêm 2 byte: vai trò (1 = admin) và bàn phím có đang bị khoá không.
+  - `GET_LOGS` trả `[tổng 4B][bản ghi đầu 4B][số bản ghi][bản ghi 16B…]`, tối đa 12 bản ghi mỗi lần. Thời gian trong bản ghi là little-endian.
+  - **Giữ nút 15 giây giờ xoá cả thẻ, vân tay và PIN**, không chỉ điện thoại. Nhật ký được giữ lại.
+- App:
+  - `SecureCommandSender.send` có tham số `timeout`.
+  - `lib/features/access/`: `AccessAdmin` (lệnh quản lý), trang **Quản lý truy cập** (PIN, thẻ, vân tay), trang **Nhật ký** (60 bản ghi mới nhất).
+  - Trang Thiết bị hiện 2 mục này khi điện thoại là admin; phải qua sinh trắc học mới mở được.
+  - `test/access_admin_test.dart`. Tổng 14/14 test đạt, `flutter analyze` sạch.
+
+### Kết quả test trên khoá thật (12/10/2026, điện thoại OPPO PKB110 là admin #1)
+- ✅ Xoá hết bằng giữ nút 15 giây, ghép đôi lại, điện thoại là admin.
+- ✅ Đặt PIN từ app, gõ PIN đúng + `#` thì mở. Lần đầu không chạy vì lỗi tràn số khi tính "10 giây không bấm thì xoá" (so `now` cũ với `pinLastKey` mới hơn); đã sửa.
+- ✅ Đăng ký vân tay (2 lần đặt tay) và mở bằng vân tay.
+- ✅ Thẻ lạ bị từ chối, đăng ký thẻ, mở bằng thẻ.
+- ⬜ Chưa thử: gõ sai PIN và khoá bàn phím sau 5 lần sai; mở khoá từ app sau lần nạp cuối; trang Nhật ký; xoá thẻ / vân tay / tắt PIN.
+
 ### Còn phải làm
-1. **Viết lại `smart_lock.ino`** để tích hợp các phần mới:
-   - Đọc thẻ RFID: thẻ đã đăng ký thì mở cửa; thẻ lạ thì nháy LED đỏ và ghi UID vào nhật ký.
-   - Vân tay: dò mỗi 300 ms.
-   - PIN trên bàn phím: bấm `#` để gửi, `*` để xoá. Sai 5 lần thì khoá bàn phím 5 phút.
-   - Ghi nhật ký cho mọi lần mở (app, thẻ, vân tay, PIN, nút).
-   - Đồng bộ giờ từ mỗi lệnh mã hoá.
-   - Lệnh quản lý chỉ dành cho admin: đăng ký/xoá thẻ, đăng ký vân tay (đặt tay 2 lần)/xoá vân tay, đặt PIN, liệt kê, đọc nhật ký.
-2. **Test bằng Python trên laptop** (laptop là admin). Bạn sẽ cần quẹt thẻ, đặt vân tay và gõ PIN.
-3. **App**:
-   - Thêm tham số timeout cho `SecureCommandSender.send` (lệnh đăng ký phải chờ tới 30 giây).
-   - Trang **Quản lý truy cập**: thẻ, vân tay, PIN.
-   - Trang **Nhật ký**.
-   - Unit test và test trên điện thoại.
-4. Để dùng trang quản lý, **điện thoại phải là admin**. Cần giữ nút BOOT 15 giây để xoá hết thiết bị, rồi ghép đôi điện thoại trước tiên.
+1. Thử nốt các mục ⬜ ở trên.
+2. Nếu bàn phím bị sót phím đầu tiên, tăng `FP_POLL_MS` / `RFID_POLL_MS` trong `config.h`.
+3. Cập nhật `KIEN_TRUC_APP.md` (mục 4 vẫn là giao thức dự kiến của giai đoạn 1).
+
+Khoá của laptop (`pair_state.json`) và script test Python đã mất cùng thư mục tạm, nên giờ chỉ test qua điện thoại.
 
 ---
 
@@ -175,7 +207,7 @@ firmware/
     storage.h         danh sách điện thoại đã ghép (NVS)
     access_store.h    thẻ / vân tay / PIN (giai đoạn 3)
     access_log.h      nhật ký LittleFS (giai đoạn 3)
-    smart_lock.ino    vòng lặp chính (đang là bản giai đoạn 2)
+    smart_lock.ino    vòng lặp chính (bản giai đoạn 3)
   rfid_test/, keypad_test/, fingerprint_test/, fingerprint_diag/,
   hardware_test/, button_diag/      các sketch kiểm tra phần cứng
 lib/
@@ -185,9 +217,10 @@ lib/
   core/di/            injection.dart
   core/theme/         app_theme.dart
   features/device/    quét, kết nối, ghép đôi, trạng thái
+  features/access/    quản lý thẻ / vân tay / PIN, nhật ký (admin)
   features/unlock/    mở khoá bằng sinh trắc học
   features/biometric/ local_auth
-test/                 lock_crypto_test, unlock_bloc_test, scan_page_test (9/9 đạt)
+test/                 lock_crypto_test, unlock_bloc_test, scan_page_test, access_admin_test (14/14 đạt)
 integration_test/     ble_lock_test.dart (chạy với ESP32 thật)
 ```
 

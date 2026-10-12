@@ -18,6 +18,7 @@ abstract final class FrameKind {
   static const pairResponse = 0x83; // Khoá → App: [0x83][khoá công khai của khoá 32B][keyId]
   static const pairResult = 0x84; // Khoá → App: [0x84][kết quả][keyId] – sau khi gõ mã trên bàn phím
   static const pairError = 0x85; // Khoá → App: [0x85][mã lỗi]
+  static const progress = 0x86; // Khoá → App: [0x86][cmd][bước] – tiến trình đăng ký vân tay, không mã hoá
 }
 
 /// Kết quả / lỗi ghép đôi (byte thứ 2 của gói 0x84 / 0x85).
@@ -53,6 +54,7 @@ abstract final class LockCmd {
   static const deleteFinger = 0x33;
   static const setPin = 0x34;
   static const addGuestTotp = 0x35;
+  static const listAccess = 0x36;
 }
 
 /// Mã kết quả khoá trả về.
@@ -62,13 +64,27 @@ abstract final class LockResult {
   static const badCounter = 0x02; // bộ đếm không tăng → nghi phát lại
   static const denied = 0x03; // khoá của điện thoại bị thu hồi / không đủ quyền
   static const busy = 0x04; // khoá đang bận (đang đăng ký vân tay…)
+  static const unknownCmd = 0x05;
+  static const timeout = 0x06; // hết giờ chờ quẹt thẻ / đặt tay
+  static const enrollFail = 0x07; // 2 lần đặt tay không khớp / lỗi cảm biến
+  static const full = 0x08;
+  static const badArg = 0x09;
+  static const exists = 0x0A; // thẻ / vân tay đã được đăng ký
+  static const noSensor = 0x0B; // khoá không nối được RC522 / AS608
 
   static String describe(int code) => switch (code) {
         ok => 'Thành công',
         badNonce => 'Phiên đã hết hạn, thử lại',
         badCounter => 'Gói tin bị phát lại – đã từ chối',
-        denied => 'Điện thoại này không còn quyền mở khoá',
+        denied => 'Điện thoại này không có quyền thực hiện lệnh này',
         busy => 'Khoá đang bận',
+        unknownCmd => 'Khoá không hiểu lệnh – hãy cập nhật firmware',
+        timeout => 'Hết giờ chờ',
+        enrollFail => 'Hai lần đặt tay không khớp, hãy thử lại',
+        full => 'Khoá đã hết chỗ lưu',
+        badArg => 'Tham số không hợp lệ',
+        exists => 'Thẻ / vân tay này đã được đăng ký',
+        noSensor => 'Khoá không kết nối được đầu đọc – kiểm tra dây',
         _ => 'Lỗi không xác định (0x${code.toRadixString(16)})',
       };
 }
