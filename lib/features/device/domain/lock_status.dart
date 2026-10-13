@@ -6,7 +6,7 @@ import '../../../core/crypto/lock_crypto.dart';
 import '../../../core/storage/lock_key_store.dart';
 
 /// Trạng thái khoá trả về từ lệnh STATUS:
-/// payload `[relayOn 1B][uptime giây 4B][số lần mở 4B][số điện thoại 1B][đang ghép đôi 1B]`.
+/// payload `[relayOn 1B][uptime giây 4B][số lần mở 4B][số điện thoại 1B][đang ghép đôi 1B][vai trò 1B][bàn phím bị khoá 1B]`.
 class LockStatus extends Equatable {
   const LockStatus({
     required this.unlocked,
@@ -14,6 +14,8 @@ class LockStatus extends Equatable {
     required this.unlockCount,
     this.pairedPhones,
     this.pairingMode = false,
+    this.isAdmin = false,
+    this.keypadLocked = false,
   });
 
   factory LockStatus.fromPayload(List<int> p) {
@@ -24,6 +26,8 @@ class LockStatus extends Equatable {
       unlockCount: LockCrypto.readU32(p, 5),
       pairedPhones: p.length >= 11 ? p[9] : null, // firmware giai đoạn 2 gửi thêm 2 byte
       pairingMode: p.length >= 11 && p[10] == 1,
+      isAdmin: p.length >= 13 && p[11] == 1, // firmware giai đoạn 3 gửi thêm 2 byte; vai trò 1 = admin
+      keypadLocked: p.length >= 13 && p[12] == 1,
     );
   }
 
@@ -32,9 +36,11 @@ class LockStatus extends Equatable {
   final int unlockCount; // số lần mở từ lần khởi động gần nhất
   final int? pairedPhones; // số điện thoại đã ghép đôi
   final bool pairingMode; // khoá đang mở chế độ ghép đôi
+  final bool isAdmin; // điện thoại này là admin (được quản lý thẻ / vân tay / PIN, xem nhật ký)
+  final bool keypadLocked; // bàn phím đang bị khoá 5 phút vì sai PIN 5 lần
 
   @override
-  List<Object?> get props => [unlocked, uptime, unlockCount, pairedPhones, pairingMode];
+  List<Object?> get props => [unlocked, uptime, unlockCount, pairedPhones, pairingMode, isAdmin, keypadLocked];
 }
 
 /// Use case: đọc trạng thái khoá (không cần sinh trắc học – chỉ đọc, không mở cửa).

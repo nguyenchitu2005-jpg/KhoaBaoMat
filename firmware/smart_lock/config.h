@@ -22,6 +22,7 @@ const char KP_KEYS[4][4] = {{'1','2','3','A'},{'4','5','6','B'},{'7','8','9','C'
 
 // ---- Thoi gian ----
 const uint32_t UNLOCK_MS      = 5000;   // relay dong 5 giay roi tu khoa
+const uint32_t BUTTON_OPEN_MS = 30000;  // nut trong nha: giu mo toi da 30 giay (chinh theo do nong cua chot), bam lan nua de khoa
 const uint32_t NONCE_TTL_MS   = 10000;
 const uint32_t HOLD_PAIR_MS   = 5000;   // giu nut 5 giay -> che do ghep doi
 const uint32_t HOLD_RESET_MS  = 15000;  // giu nut 15 giay -> xoa het dien thoai
@@ -54,6 +55,17 @@ const uint32_t PIN_IDLE_MS    = 10000;   // 10 giay khong bam -> xoa so dang go
 const uint32_t ENROLL_CARD_MS   = 15000;
 const uint32_t ENROLL_FINGER_MS = 15000;  // cho moi lan dat tay
 
+// ---- Chu ky do cam bien ----
+// Moi lan do chan loop() vai chuc ms (AS608 ~50ms, RC522 ~30ms). Neu ban phim bi sot phim thi tang 2 so nay.
+const uint32_t FP_POLL_MS   = 300;
+const uint32_t RFID_POLL_MS = 100;
+const uint32_t SAME_CARD_MS = 2000;  // bo qua cung 1 the quet lien tuc
+
+// ---- Phan hoi ----
+// Goi notify toi da 244 byte (MTU 247): 2 dau + 12 IV + 6 (cmd, ket qua, bo dem) + payload + 16 tag
+#define MAX_REPLY_PAYLOAD 208
+#define LOGS_PER_REPLY    12   // 9 + 12 x 16 = 201 byte
+
 // ---- Loai goi (byte dau) ----
 #define FRAME_CHALLENGE_REQ 0x01
 #define FRAME_SEALED_CMD    0x02
@@ -63,18 +75,25 @@ const uint32_t ENROLL_FINGER_MS = 15000;  // cho moi lan dat tay
 #define FRAME_PAIR_RESP     0x83  // [0x83][khoa cong khai cua khoa 32B][keyId]
 #define FRAME_PAIR_RESULT   0x84  // [0x84][ket qua][keyId]
 #define FRAME_PAIR_ERROR    0x85  // [0x85][ma loi]
+#define FRAME_PROGRESS      0x86  // [0x86][cmd][buoc] - khong ma hoa, chi de app hien huong dan khi dang ky van tay
+                                  //   buoc 1 = da doc lan 1, nhac tay ra | buoc 2 = dat lai ngon tay lan 2
 
 // Lenh (trong phan ma hoa)
 #define CMD_UNLOCK        0x10
 #define CMD_LOCK          0x11
-#define CMD_STATUS        0x12
-#define CMD_GET_LOGS      0x20  // [tu ban ghi so 4B] -> [tong 4B][so ban ghi 1B][ban ghi 16B ...]
+#define CMD_STATUS        0x12  // -> [relay][uptime 4B][so lan mo 4B][so dien thoai][dang ghep doi][vai tro][ban phim bi khoa]
+// Cac lenh tu 0x20 tro len chi danh cho admin
+#define CMD_GET_LOGS      0x20  // [tu ban ghi so 4B] -> [tong 4B][ban ghi dau tien 4B][so ban ghi 1B][ban ghi 16B ...]
+                                //   ban ghi chep nguyen struct LogRecord: thoi gian 4B LITTLE-endian (cac so khac trong giao thuc la big-endian)
 #define CMD_ENROLL_CARD   0x30  // admin; cho quet the 15 giay -> [chi so][do dai UID][UID]
 #define CMD_DELETE_CARD   0x31  // admin; [chi so] (0xFF = xoa het)
 #define CMD_ENROLL_FINGER 0x32  // admin; dat tay 2 lan -> [ID van tay]
 #define CMD_DELETE_FINGER 0x33  // admin; [ID] (0xFF = xoa het)
 #define CMD_SET_PIN       0x34  // admin; [do dai][cac chu so ASCII] (do dai 0 = tat PIN)
-#define CMD_LIST_ACCESS   0x36  // admin; -> [co PIN][mat na van tay 4B][so the][{chi so, do dai, UID}...]
+#define CMD_SET_GUEST_PIN 0x35  // admin; [het han unix 4B][do dai][cac chu so ASCII] (do dai 0 = xoa ma khach)
+#define CMD_LIST_PHONES   0x37  // admin; -> [so dien thoai][{keyId, vai tro}...]
+#define CMD_REVOKE_PHONE  0x41  // admin; [keyId] - thu hoi 1 dien thoai (khong tu thu hoi chinh minh)
+#define CMD_LIST_ACCESS   0x36  // admin; -> [co PIN][mat na van tay 4B][han ma khach 4B, 0 = khong co][so the][{chi so, do dai, UID}...]
 
 // Ket qua lenh
 #define RES_OK           0x00

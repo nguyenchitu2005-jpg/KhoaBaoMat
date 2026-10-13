@@ -53,6 +53,16 @@ class PhoneStore {
     return p;
   }
 
+  // Thu hoi 1 dien thoai: xoa ca khoa AES cua no
+  bool remove(uint8_t id) {
+    Phone *p = find(id);
+    if (!p) return false;
+    memset(p, 0, sizeof(Phone));
+    p->id = id;
+    save();
+    return true;
+  }
+
   void save() { prefs_.putBytes("phones", phones_, sizeof(phones_)); }
 
   void clear() {
