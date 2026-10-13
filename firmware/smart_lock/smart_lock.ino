@@ -104,10 +104,10 @@ void beep(int ms, int freq = 2700) {
   delay(ms + 30);
 }
 
-void setRelay(bool on) {
+void setRelay(bool on, uint32_t holdMs = UNLOCK_MS) {
   digitalWrite(RELAY_PIN, on ? RELAY_ON : !RELAY_ON);
   relayOn = on;
-  relayOffAt = on ? millis() + UNLOCK_MS : 0;
+  relayOffAt = on ? millis() + holdMs : 0;
   digitalWrite(LED_GREEN, on ? HIGH : LOW);
 }
 
@@ -118,8 +118,8 @@ void flashRed(int ms = 400) {
 }
 
 // method = LOG_APP / LOG_CARD / ..., whoId = so dien thoai / chi so the / ID van tay
-void unlockNow(const char *who, uint8_t method, uint8_t whoId) {
-  setRelay(true);
+void unlockNow(const char *who, uint8_t method, uint8_t whoId, uint32_t holdMs = UNLOCK_MS) {
+  setRelay(true, holdMs);
   unlockCount++;
   accessLog.add(method, whoId, LOG_OK);
   Serial.printf("[KHOA] MO - %s #%u (lan %lu)\n", who, whoId, (unsigned long)unlockCount);
@@ -709,7 +709,16 @@ void pollButton(uint32_t now) {
   }
   if (down && !raw) {
     down = false;
-    if (stage == 0 && now - downSince < 1000) unlockNow("nut trong nha", LOG_BUTTON, 0);
+    if (stage == 0 && now - downSince < 1000) {
+      // Bam mot nhip: dang khoa -> mo (toi da BUTTON_OPEN_MS), dang mo -> khoa ngay
+      if (relayOn) {
+        setRelay(false);
+        Serial.println("[KHOA] DONG - nut trong nha");
+        beep(80);
+      } else {
+        unlockNow("nut trong nha", LOG_BUTTON, 0, BUTTON_OPEN_MS);
+      }
+    }
   }
 }
 

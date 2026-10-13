@@ -22,6 +22,7 @@ const char KP_KEYS[4][4] = {{'1','2','3','A'},{'4','5','6','B'},{'7','8','9','C'
 
 // ---- Thoi gian ----
 const uint32_t UNLOCK_MS      = 5000;   // relay dong 5 giay roi tu khoa
+const uint32_t BUTTON_OPEN_MS = 30000;  // nut trong nha: giu mo toi da 30 giay (chinh theo do nong cua chot), bam lan nua de khoa
 const uint32_t NONCE_TTL_MS   = 10000;
 const uint32_t HOLD_PAIR_MS   = 5000;   // giu nut 5 giay -> che do ghep doi
 const uint32_t HOLD_RESET_MS  = 15000;  // giu nut 15 giay -> xoa het dien thoai
