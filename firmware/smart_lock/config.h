@@ -89,7 +89,10 @@ const uint32_t SAME_CARD_MS = 2000;  // bo qua cung 1 the quet lien tuc
 #define CMD_ENROLL_FINGER 0x32  // admin; dat tay 2 lan -> [ID van tay]
 #define CMD_DELETE_FINGER 0x33  // admin; [ID] (0xFF = xoa het)
 #define CMD_SET_PIN       0x34  // admin; [do dai][cac chu so ASCII] (do dai 0 = tat PIN)
-#define CMD_LIST_ACCESS   0x36  // admin; -> [co PIN][mat na van tay 4B][so the][{chi so, do dai, UID}...]
+#define CMD_SET_GUEST_PIN 0x35  // admin; [het han unix 4B][do dai][cac chu so ASCII] (do dai 0 = xoa ma khach)
+#define CMD_LIST_PHONES   0x37  // admin; -> [so dien thoai][{keyId, vai tro}...]
+#define CMD_REVOKE_PHONE  0x41  // admin; [keyId] - thu hoi 1 dien thoai (khong tu thu hoi chinh minh)
+#define CMD_LIST_ACCESS   0x36  // admin; -> [co PIN][mat na van tay 4B][han ma khach 4B, 0 = khong co][so the][{chi so, do dai, UID}...]
 
 // Ket qua lenh
 #define RES_OK           0x00

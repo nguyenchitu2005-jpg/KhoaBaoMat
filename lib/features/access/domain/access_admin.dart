@@ -32,22 +32,45 @@ class CardEntry extends Equatable {
   List<Object?> get props => [index, uid];
 }
 
+/// 1 điện thoại đã ghép đôi với khoá.
+class PhoneEntry extends Equatable {
+  const PhoneEntry({required this.keyId, required this.isAdmin, this.isMe = false});
+
+  /// Payload LIST_PHONES: `[số điện thoại][{keyId, vai trò}…]`, vai trò 1 = admin. [myKeyId] = máy đang dùng.
+  static List<PhoneEntry> listFromPayload(List<int> p, {int? myKeyId}) {
+    if (p.isEmpty || p.length != 1 + 2 * p[0]) throw const FormatException('Danh sách điện thoại không hợp lệ');
+    return [
+      for (var i = 1; i < p.length; i += 2)
+        PhoneEntry(keyId: p[i], isAdmin: p[i + 1] == 1, isMe: p[i] == myKeyId),
+    ];
+  }
+
+  final int keyId;
+  final bool isAdmin;
+  final bool isMe;
+
+  @override
+  List<Object?> get props => [keyId, isAdmin, isMe];
+}
+
 /// Những gì đang mở được khoá ngoài điện thoại: payload của lệnh LIST_ACCESS
-/// `[có PIN 1B][mặt nạ vân tay 4B][số thẻ 1B][{chỉ số, độ dài, UID}…]`.
+/// `[có PIN 1B][mặt nạ vân tay 4B][hạn mã khách 4B, 0 = không có][số thẻ 1B][{chỉ số, độ dài, UID}…]`.
 class AccessList extends Equatable {
-  const AccessList({required this.hasPin, required this.fingerIds, required this.cards});
+  const AccessList({required this.hasPin, required this.fingerIds, required this.cards, this.guestExpiry});
 
   factory AccessList.fromPayload(List<int> p) {
-    if (p.length < 6) throw const FormatException('Danh sách truy cập không hợp lệ');
+    if (p.length < 10) throw const FormatException('Danh sách truy cập không hợp lệ');
     final mask = LockCrypto.readU32(p, 1);
+    final guest = LockCrypto.readU32(p, 5);
     final cards = <CardEntry>[];
-    var offset = 6;
-    for (var n = 0; n < p[5]; n++) {
+    var offset = 10;
+    for (var n = 0; n < p[9]; n++) {
       cards.add(CardEntry.fromBytes(p, offset));
       offset += 2 + p[offset + 1];
     }
     return AccessList(
       hasPin: p[0] == 1,
+      guestExpiry: guest == 0 ? null : DateTime.fromMillisecondsSinceEpoch(guest * 1000),
       fingerIds: [
         for (var id = 1; id <= 32; id++)
           if ((mask >> (id - 1)) & 1 == 1) id,
@@ -59,9 +82,10 @@ class AccessList extends Equatable {
   final bool hasPin;
   final List<int> fingerIds; // ID mẫu vân tay trong AS608 (1..32)
   final List<CardEntry> cards;
+  final DateTime? guestExpiry; // giờ hết hạn của mã khách; null = chưa đặt
 
   @override
-  List<Object?> get props => [hasPin, fingerIds, cards];
+  List<Object?> get props => [hasPin, fingerIds, cards, guestExpiry];
 }
 
 /// 1 bản ghi nhật ký ra vào, 16 byte:
@@ -97,7 +121,7 @@ class LogEntry extends Equatable {
         (0, 1) => 'Mở bằng app · điện thoại #$who',
         (0, 2) => 'Mở bằng thẻ ${who + 1}',
         (0, 3) => 'Mở bằng vân tay #$who',
-        (0, 4) => 'Mở bằng mã PIN',
+        (0, 4) => who == 1 ? 'Mở bằng mã khách' : 'Mở bằng mã PIN',
         (0, 5) => 'Mở bằng nút trong nhà',
         (1, 2) => 'Thẻ lạ $extra',
         (1, _) => 'Vân tay lạ',
@@ -133,6 +157,14 @@ class AccessAdmin {
   Future<AccessList> list(String lockId) async =>
       AccessList.fromPayload(await _send(lockId, LockCmd.listAccess));
 
+  Future<List<PhoneEntry>> listPhones(String lockId) async => PhoneEntry.listFromPayload(
+        await _send(lockId, LockCmd.listPhones),
+        myKeyId: (await _keys.read(lockId))?.keyId,
+      );
+
+  /// Thu hồi 1 điện thoại: khoá xoá khoá AES của máy đó. Khoá từ chối nếu là chính máy này.
+  Future<void> revokePhone(String lockId, int keyId) => _send(lockId, LockCmd.revokePhone, payload: [keyId]);
+
   /// Khoá chờ quẹt thẻ mới tối đa 15 giây.
   Future<CardEntry> enrollCard(String lockId) async => CardEntry.fromBytes(
       await _send(lockId, LockCmd.enrollRfid, timeout: const Duration(seconds: 20)));
@@ -162,6 +194,19 @@ class AccessAdmin {
       throw ArgumentError('Mã PIN phải gồm 4–8 chữ số');
     }
     return _send(lockId, LockCmd.setPin, payload: [pin.length, ...pin.codeUnits]);
+  }
+
+  /// Mã khách: PIN thứ hai, khoá tự bỏ sau [validFor]. [pin] rỗng = xoá mã khách.
+  /// Payload: `[hết hạn unix 4B][độ dài][chữ số ASCII]`.
+  Future<void> setGuestPin(String lockId, String pin, {Duration validFor = Duration.zero, DateTime? now}) {
+    if (pin.isNotEmpty && (!RegExp(r'^\d{4,8}$').hasMatch(pin) || validFor <= Duration.zero)) {
+      throw ArgumentError('Mã khách phải gồm 4–8 chữ số và có thời hạn');
+    }
+    final expiry = pin.isEmpty ? 0 : (now ?? DateTime.now()).add(validFor).millisecondsSinceEpoch ~/ 1000;
+    return _send(lockId, LockCmd.setGuestPin, payload: [
+      expiry >> 24, (expiry >> 16) & 0xFF, (expiry >> 8) & 0xFF, expiry & 0xFF,
+      pin.length, ...pin.codeUnits,
+    ]);
   }
 
   /// Đọc [count] bản ghi mới nhất, mới nhất đứng đầu.

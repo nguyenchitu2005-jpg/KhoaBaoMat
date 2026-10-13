@@ -47,6 +47,7 @@ void main() {
     final list = AccessList.fromPayload([
       1, // có PIN
       0x80, 0, 0, 0x05, // vân tay 1, 3, 32
+      ...u32(1791800000), // hạn mã khách
       2, // 2 thẻ
       0, 4, 0x04, 0xA1, 0xB2, 0xC3,
       3, 7, 1, 2, 3, 4, 5, 6, 7,
@@ -54,7 +55,32 @@ void main() {
     expect(list.hasPin, isTrue);
     expect(list.fingerIds, [1, 3, 32]);
     expect(list.cards, const [CardEntry(0, '04:A1:B2:C3'), CardEntry(3, '01:02:03:04:05:06:07')]);
-    expect(() => AccessList.fromPayload([0, 0, 0, 0, 0, 1, 0, 4, 1]), throwsFormatException); // thẻ bị cắt
+    expect(list.guestExpiry, DateTime.fromMillisecondsSinceEpoch(1791800000 * 1000));
+    expect(AccessList.fromPayload([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).guestExpiry, isNull);
+    expect(() => AccessList.fromPayload([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 4, 1]), throwsFormatException); // thẻ bị cắt
+  });
+
+  test('setGuestPin gửi [hết hạn 4B][độ dài][chữ số], bắt buộc có thời hạn', () async {
+    when(() => sender.send(any(), any(), payload: any(named: 'payload'), timeout: any(named: 'timeout')))
+        .thenAnswer((_) async => Uint8List(0));
+    final now = DateTime.fromMillisecondsSinceEpoch(1791800000 * 1000);
+
+    await admin.setGuestPin(lockId, '4321', validFor: const Duration(hours: 1), now: now);
+    await admin.setGuestPin(lockId, '');
+
+    verify(() => sender.send(cred, LockCmd.setGuestPin,
+        payload: [...u32(1791803600), 4, 0x34, 0x33, 0x32, 0x31], timeout: any(named: 'timeout'))).called(1);
+    verify(() => sender.send(cred, LockCmd.setGuestPin, payload: [0, 0, 0, 0, 0], timeout: any(named: 'timeout')))
+        .called(1);
+    expect(() => admin.setGuestPin(lockId, '4321'), throwsArgumentError); // thiếu thời hạn
+  });
+
+  test('PhoneEntry đọc đúng payload LIST_PHONES', () {
+    expect(PhoneEntry.listFromPayload([2, 1, 1, 3, 2], myKeyId: 1), const [
+      PhoneEntry(keyId: 1, isAdmin: true, isMe: true),
+      PhoneEntry(keyId: 3, isAdmin: false),
+    ]);
+    expect(() => PhoneEntry.listFromPayload([2, 1, 1]), throwsFormatException); // thiếu byte
   });
 
   test('LogEntry đọc đúng bản ghi 16 byte', () {

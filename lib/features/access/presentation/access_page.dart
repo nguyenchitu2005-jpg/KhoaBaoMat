@@ -24,6 +24,21 @@ class AccessPage extends StatelessWidget {
 class _AccessView extends StatelessWidget {
   const _AccessView();
 
+  static String _guestLabel(DateTime? expiry) {
+    if (expiry == null) return 'Chưa đặt';
+    if (expiry.isBefore(DateTime.now())) return 'Đã hết hạn';
+    String two(int n) => n.toString().padLeft(2, '0');
+    return 'Hết hạn ${two(expiry.hour)}:${two(expiry.minute)} ngày ${two(expiry.day)}/${two(expiry.month)}';
+  }
+
+  /// Hỏi mã rồi hỏi thời hạn.
+  Future<void> _setGuestPin(BuildContext context, AccessCubit cubit) async {
+    final pin = await showDialog<String>(context: context, builder: (_) => const _PinDialog(title: 'Mã khách mới'));
+    if (pin == null || !context.mounted) return;
+    final validFor = await showDialog<Duration>(context: context, builder: (_) => const _DurationDialog());
+    if (validFor != null) await cubit.setGuestPin(pin, validFor);
+  }
+
   @override
   Widget build(BuildContext context) {
     return BlocConsumer<AccessCubit, AccessState>(
@@ -83,6 +98,26 @@ class _AccessView extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
+                Text('Mã khách', style: t.titleMedium),
+                Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.timelapse_rounded),
+                    title: Text(_guestLabel(list.guestExpiry)),
+                    subtitle: const Text('Mã PIN tạm cho khách, khoá tự bỏ khi hết hạn'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (list.guestExpiry != null)
+                          TextButton(onPressed: s.busy ? null : () => cubit.setGuestPin(''), child: const Text('Xoá')),
+                        TextButton(
+                          onPressed: s.busy ? null : () => _setGuestPin(context, cubit),
+                          child: Text(list.guestExpiry != null ? 'Đổi' : 'Đặt'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
                 Text('Thẻ RFID (${list.cards.length}/20)', style: t.titleMedium),
                 Card(
                   child: Column(
@@ -131,6 +166,31 @@ class _AccessView extends StatelessWidget {
                     ],
                   ),
                 ),
+                const SizedBox(height: 16),
+                Text('Điện thoại (${s.phones.length}/8)', style: t.titleMedium),
+                Card(
+                  child: Column(
+                    children: [
+                      for (final p in s.phones)
+                        ListTile(
+                          leading: const Icon(Icons.smartphone_rounded),
+                          title: Text('Điện thoại #${p.keyId}${p.isMe ? ' (máy này)' : ''}'),
+                          subtitle: Text(p.isAdmin ? 'Admin' : 'Thành viên'),
+                          trailing: p.isMe
+                              ? null
+                              : IconButton(
+                                  tooltip: 'Thu hồi',
+                                  onPressed: s.busy ? null : () => cubit.revokePhone(p.keyId),
+                                  icon: const Icon(Icons.delete_outline_rounded),
+                                ),
+                        ),
+                      const ListTile(
+                        leading: Icon(Icons.info_outline_rounded),
+                        title: Text('Thêm máy: giữ nút trong nhà 5 giây rồi ghép đôi trên máy mới'),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ],
           ),
@@ -140,9 +200,69 @@ class _AccessView extends StatelessWidget {
   }
 }
 
+/// Hộp thoại nhập thời hạn của mã khách: một số kèm đơn vị phút hoặc giờ. Trả về Duration qua Navigator.pop.
+class _DurationDialog extends StatefulWidget {
+  const _DurationDialog();
+
+  @override
+  State<_DurationDialog> createState() => _DurationDialogState();
+}
+
+class _DurationDialogState extends State<_DurationDialog> {
+  final _controller = TextEditingController(text: '60');
+  bool _hours = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = int.tryParse(_controller.text) ?? 0;
+    return AlertDialog(
+      title: const Text('Có hiệu lực trong'),
+      content: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _controller,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              maxLength: 4,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: const InputDecoration(counterText: ''),
+              onChanged: (_) => setState(() {}),
+            ),
+          ),
+          const SizedBox(width: 16),
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: false, label: Text('phút')),
+              ButtonSegment(value: true, label: Text('giờ')),
+            ],
+            selected: {_hours},
+            onSelectionChanged: (v) => setState(() => _hours = v.first),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Huỷ')),
+        FilledButton(
+          onPressed: n > 0 ? () => Navigator.pop(context, _hours ? Duration(hours: n) : Duration(minutes: n)) : null,
+          child: const Text('Lưu'),
+        ),
+      ],
+    );
+  }
+}
+
 /// Hộp thoại nhập mã PIN mới (4–8 chữ số). Trả về mã qua Navigator.pop.
 class _PinDialog extends StatefulWidget {
-  const _PinDialog();
+  const _PinDialog({this.title = 'Mã PIN mới'});
+
+  final String title;
 
   @override
   State<_PinDialog> createState() => _PinDialogState();
@@ -160,7 +280,7 @@ class _PinDialogState extends State<_PinDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Mã PIN mới'),
+      title: Text(widget.title),
       content: TextField(
         controller: _controller,
         autofocus: true,

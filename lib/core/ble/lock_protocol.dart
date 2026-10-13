@@ -53,8 +53,10 @@ abstract final class LockCmd {
   static const enrollFinger = 0x32;
   static const deleteFinger = 0x33;
   static const setPin = 0x34;
-  static const addGuestTotp = 0x35;
+  static const setGuestPin = 0x35;
   static const listAccess = 0x36;
+  static const listPhones = 0x37;
+  static const revokePhone = 0x41;
 }
 
 /// Mã kết quả khoá trả về.

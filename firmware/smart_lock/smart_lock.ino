@@ -238,13 +238,49 @@ void handleAdmin(Phone *p, uint8_t cmd, uint32_t counter, const uint8_t *arg, si
       sendSealedReply(p, cmd, RES_OK, counter);
       break;
     }
+    case CMD_SET_GUEST_PIN: {
+      // [het han unix 4B][do dai][cac chu so ASCII]; do dai 0 = xoa ma khach
+      bool ok = argLen >= 5 && argLen == (size_t)arg[4] + 5 &&
+                (arg[4] == 0 || (arg[4] >= PIN_MIN_LEN && arg[4] <= PIN_MAX_LEN));
+      for (size_t i = 5; ok && i < argLen; i++) ok = arg[i] >= '0' && arg[i] <= '9';
+      // gio cua khoa vua duoc dong bo tu chinh lenh nay
+      if (ok && arg[4]) ok = be32(arg) > accessLog.nowUnix();
+      if (!ok) { sendSealedReply(p, cmd, RES_BAD_ARG, counter); break; }
+      acl.setGuestPin((const char *)arg + 5, arg[4], be32(arg));
+      Serial.println(arg[4] ? "[PIN] Da dat ma khach" : "[PIN] Da xoa ma khach");
+      sendSealedReply(p, cmd, RES_OK, counter);
+      break;
+    }
+    case CMD_LIST_PHONES: {
+      uint8_t out[1 + 2 * MAX_PHONES] = {0};
+      for (uint8_t id = 1; id <= MAX_PHONES; id++) {
+        Phone *q = store.find(id);
+        if (!q) continue;
+        out[1 + 2 * out[0]] = id;
+        out[2 + 2 * out[0]] = q->role;
+        out[0]++;
+      }
+      sendSealedReply(p, cmd, RES_OK, counter, out, 1 + 2 * out[0]);
+      break;
+    }
+    case CMD_REVOKE_PHONE: {
+      // Tra loi truoc khi xoa. Khong cho tu thu hoi minh: khoa se khong con admin nao.
+      bool ok = argLen == 1 && arg[0] != p->id && store.find(arg[0]);
+      sendSealedReply(p, cmd, ok ? RES_OK : RES_BAD_ARG, counter);
+      if (ok) {
+        store.remove(arg[0]);
+        Serial.printf("[KHOA] Da thu hoi dien thoai #%u\n", arg[0]);
+      }
+      break;
+    }
     case CMD_LIST_ACCESS: {
-      // [co PIN][mat na van tay 4B][so the][{chi so, do dai, UID}...] - the nao khong vua goi thi bi cat
+      // [co PIN][mat na van tay 4B][han ma khach 4B][so the][{chi so, do dai, UID}...] - the nao khong vua goi thi bi cat
       uint8_t out[MAX_REPLY_PAYLOAD];
-      size_t n = 6;
+      size_t n = 10;
       out[0] = acl.pinSet();
       putBe32(out + 1, acl.fingerMask());
-      out[5] = 0;
+      putBe32(out + 5, acl.guestExpiry());
+      out[9] = 0;
       for (int i = 0; i < MAX_CARDS; i++) {
         const Card &c = acl.card(i);
         if (!c.active || n + 2 + c.uidLen > sizeof(out)) continue;
@@ -252,7 +288,7 @@ void handleAdmin(Phone *p, uint8_t cmd, uint32_t counter, const uint8_t *arg, si
         out[n++] = c.uidLen;
         memcpy(out + n, c.uid, c.uidLen);
         n += c.uidLen;
-        out[5]++;
+        out[9]++;
       }
       sendSealedReply(p, cmd, RES_OK, counter, out, n);
       break;
@@ -433,12 +469,13 @@ void onPinKey(char k) {
   if (k != '#' || pinLen == 0) return;
 
   bool ok = acl.checkPin(pinBuf, pinLen);
+  bool guest = !ok && acl.checkGuestPin(pinBuf, pinLen, accessLog.nowUnix());
   pinLen = 0;
   memset(pinBuf, 0, sizeof(pinBuf));
-  if (ok) {
+  if (ok || guest) {
     pinWrong = 0;
-    unlockNow("ma PIN", LOG_PIN, 0);
-  } else if (!acl.pinSet()) {
+    unlockNow(guest ? "ma khach" : "ma PIN", LOG_PIN, guest);  // nhat ky: ai = 1 la ma khach
+  } else if (!acl.pinSet() && !acl.guestSet()) {
     Serial.println("[PIN] Chua dat ma PIN (dat trong app)");
     flashRed();
   } else if (++pinWrong >= PIN_MAX_WRONG) {

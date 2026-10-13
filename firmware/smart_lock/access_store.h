@@ -23,6 +23,12 @@ class AccessStore {
       prefs_.getBytes("pinsalt", pinSalt_, 16);
       prefs_.getBytes("pinhash", pinHash_, 32);
     }
+    guestExp_ = prefs_.getULong("gexp", 0);
+    if (prefs_.getBytesLength("ghash") != 32 || prefs_.getBytesLength("gsalt") != 16) guestExp_ = 0;
+    if (guestExp_) {
+      prefs_.getBytes("gsalt", guestSalt_, 16);
+      prefs_.getBytes("ghash", guestHash_, 32);
+    }
   }
 
   // ---------- The RFID ----------
@@ -84,33 +90,61 @@ class AccessStore {
       return;
     }
     esp_fill_random(pinSalt_, 16);
-    hashPin(digits, len, pinHash_);
+    hashPin(pinSalt_, digits, len, pinHash_);
     prefs_.putBytes("pinsalt", pinSalt_, 16);
     prefs_.putBytes("pinhash", pinHash_, 32);
     pinSet_ = true;
   }
   bool checkPin(const char *digits, uint8_t len) const {
-    if (!pinSet_) return false;
-    uint8_t h[32];
-    hashPin(digits, len, h);
-    uint8_t diff = 0;  // so sanh khong phu thuoc thoi gian
-    for (int i = 0; i < 32; i++) diff |= h[i] ^ pinHash_[i];
-    return diff == 0;
+    return pinSet_ && matches(pinSalt_, pinHash_, digits, len);
+  }
+
+  // ---------- Ma khach: PIN thu hai co han (unix giay), cung cach bam ----------
+  bool guestSet() const { return guestExp_ != 0; }
+  uint32_t guestExpiry() const { return guestExp_; }
+  void setGuestPin(const char *digits, uint8_t len, uint32_t expiry) {
+    if (len == 0 || expiry == 0) {
+      prefs_.remove("ghash");
+      prefs_.remove("gsalt");
+      prefs_.remove("gexp");
+      guestExp_ = 0;
+      return;
+    }
+    esp_fill_random(guestSalt_, 16);
+    hashPin(guestSalt_, digits, len, guestHash_);
+    prefs_.putBytes("gsalt", guestSalt_, 16);
+    prefs_.putBytes("ghash", guestHash_, 32);
+    prefs_.putULong("gexp", expiry);
+    guestExp_ = expiry;
+  }
+  // nowUnix = 0 (khoa chua duoc dong bo gio, vd. vua mat dien) -> tu choi. Qua han -> tu xoa ma.
+  bool checkGuestPin(const char *digits, uint8_t len, uint32_t nowUnix) {
+    if (!guestExp_ || nowUnix == 0) return false;
+    if (nowUnix >= guestExp_) { setGuestPin("", 0, 0); return false; }
+    return matches(guestSalt_, guestHash_, digits, len);
   }
 
   void clearAll() {
     deleteCard(0xFF);
     clearFingers();
     setPin("", 0);
+    setGuestPin("", 0, 0);
   }
 
  private:
   void saveCards() { prefs_.putBytes("cards", cards_, sizeof(cards_)); }
-  void hashPin(const char *digits, uint8_t len, uint8_t out[32]) const {
+  static bool matches(const uint8_t salt[16], const uint8_t hash[32], const char *digits, uint8_t len) {
+    uint8_t h[32];
+    hashPin(salt, digits, len, h);
+    uint8_t diff = 0;  // so sanh khong phu thuoc thoi gian
+    for (int i = 0; i < 32; i++) diff |= h[i] ^ hash[i];
+    return diff == 0;
+  }
+  static void hashPin(const uint8_t salt[16], const char *digits, uint8_t len, uint8_t out[32]) {
     mbedtls_sha256_context c;
     mbedtls_sha256_init(&c);
     mbedtls_sha256_starts(&c, 0);
-    mbedtls_sha256_update(&c, pinSalt_, 16);
+    mbedtls_sha256_update(&c, salt, 16);
     mbedtls_sha256_update(&c, (const uint8_t *)digits, len);
     mbedtls_sha256_finish(&c, out);
     mbedtls_sha256_free(&c);
@@ -122,4 +156,7 @@ class AccessStore {
   bool pinSet_ = false;
   uint8_t pinSalt_[16];
   uint8_t pinHash_[32];
+  uint32_t guestExp_ = 0;
+  uint8_t guestSalt_[16];
+  uint8_t guestHash_[32];
 };
