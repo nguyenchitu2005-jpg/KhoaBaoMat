@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../../../core/ble/lock_protocol.dart';
+import '../../../core/link/lock_link.dart';
 
 class BleException implements Exception {
   const BleException(this.message);
@@ -14,12 +15,13 @@ class BleException implements Exception {
 
 /// Lớp dữ liệu BLE: quét, kết nối, gửi gói và nhận gói notify từ khoá.
 /// Không biết gì về mã hoá – chỉ chuyển byte.
-class BleLockDataSource {
+class BleLockDataSource implements LockTransport {
   BluetoothDevice? _device;
   BluetoothCharacteristic? _command;
   final _frames = StreamController<Uint8List>.broadcast();
 
   /// Mọi gói khoá gửi về qua characteristic Event.
+  @override
   Stream<Uint8List> get frames => _frames.stream;
 
   Stream<BluetoothConnectionState> get connectionState =>
@@ -76,6 +78,7 @@ class BleLockDataSource {
   }
 
   /// Gửi 1 gói rồi chờ gói trả về đầu tiên có byte đầu thuộc [replyKinds].
+  @override
   Future<Uint8List> request(
     List<int> frame, {
     required Set<int> replyKinds,

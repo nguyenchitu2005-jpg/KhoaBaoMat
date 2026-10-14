@@ -8,6 +8,8 @@
 	<string>Dùng Face ID để xác nhận bạn trước khi mở cửa.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Dùng camera trước để nhận diện khuôn mặt khi mở cửa.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Tìm và điều khiển khoá qua Wi-Fi trong nhà khi không dùng Bluetooth.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

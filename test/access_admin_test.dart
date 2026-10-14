@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -8,6 +9,7 @@ import 'package:khoabaomat/core/ble/secure_command_sender.dart';
 import 'package:khoabaomat/core/storage/lock_key_store.dart';
 import 'package:khoabaomat/features/access/domain/access_admin.dart';
 import 'package:khoabaomat/features/device/data/ble_lock_data_source.dart';
+import 'package:khoabaomat/features/device/data/mqtt_lock_data_source.dart';
 import 'package:khoabaomat/features/device/domain/lock_status.dart';
 import 'package:mocktail/mocktail.dart';
 
@@ -135,5 +137,52 @@ void main() {
     verify(() => sender.send(cred, LockCmd.setPin, payload: [0], timeout: any(named: 'timeout'))).called(1);
     expect(() => admin.setPin(lockId, '12a4'), throwsArgumentError);
     expect(() => admin.setPin(lockId, '123'), throwsArgumentError);
+  });
+
+  test('setWifi gửi [độ dài tên][tên UTF-8][độ dài mật khẩu][mật khẩu], quên Wi-Fi gửi [0, 0]', () async {
+    when(() => sender.send(any(), any(), payload: any(named: 'payload'), timeout: any(named: 'timeout')))
+        .thenAnswer((_) async => Uint8List(0));
+    final name = utf8.encode('Nhà Tý');
+
+    await admin.setWifi(lockId, 'Nhà Tý', '12345678');
+    await admin.setWifi(lockId, '', '');
+
+    verify(() => sender.send(cred, LockCmd.setWifi,
+        payload: [name.length, ...name, 8, ...'12345678'.codeUnits], timeout: any(named: 'timeout'))).called(1);
+    verify(() => sender.send(cred, LockCmd.setWifi, payload: [0, 0], timeout: any(named: 'timeout'))).called(1);
+    expect(() => admin.setWifi(lockId, 'Nha', '1234567'), throwsArgumentError); // WPA2 cần tối thiểu 8 ký tự
+    expect(() => admin.setWifi(lockId, 'x' * 33, ''), throwsArgumentError); // tên mạng tối đa 32 byte
+  });
+
+  test('WifiStatus đọc đúng payload WIFI_STATUS', () {
+    expect(
+      WifiStatus.fromPayload([2, 256 - 55, 192, 168, 1, 23, 1, 3, ...'Nha'.codeUnits]),
+      const WifiStatus(state: WifiState.connected, ssid: 'Nha', rssi: -55, ip: '192.168.1.23', timeSynced: true),
+    );
+    expect(WifiStatus.fromPayload([0, 0, 0, 0, 0, 0, 0, 0]).state, WifiState.notSet);
+    expect(() => WifiStatus.fromPayload([2, 0, 0, 0, 0, 0, 0, 5, 1]), throwsFormatException); // tên bị cắt
+    expect(() => WifiStatus.fromPayload([9, 0, 0, 0, 0, 0, 0, 0]), throwsFormatException); // trạng thái lạ
+  });
+
+  test('setMqtt gửi [host][cổng 2B][user][mật khẩu] kèm độ dài, tắt gửi [0]', () async {
+    when(() => sender.send(any(), any(), payload: any(named: 'payload'), timeout: any(named: 'timeout')))
+        .thenAnswer((_) async => Uint8List(0));
+
+    await admin.setMqtt(lockId, const MqttSettings(host: 'a.hivemq.cloud', port: 8883, user: 'kb', password: 'p@ss'));
+    await admin.setMqtt(lockId, null);
+
+    verify(() => sender.send(cred, LockCmd.setMqtt,
+        payload: [14, ...'a.hivemq.cloud'.codeUnits, 0x22, 0xB3, 2, ...'kb'.codeUnits, 4, ...'p@ss'.codeUnits],
+        timeout: any(named: 'timeout'))).called(1);
+    verify(() => sender.send(cred, LockCmd.setMqtt, payload: [0], timeout: any(named: 'timeout'))).called(1);
+    expect(() => admin.setMqtt(lockId, const MqttSettings(host: '', user: 'u', password: 'p')), throwsArgumentError);
+    expect(() => admin.setMqtt(lockId, MqttSettings(host: 'h.x', user: 'u' * 65, password: 'p')), throwsArgumentError);
+  });
+
+  test('MqttStatus đọc đúng payload MQTT_STATUS', () {
+    expect(MqttStatus.fromPayload([2, 3, ...'h.x'.codeUnits]), const MqttStatus(state: MqttLinkState.connected, host: 'h.x'));
+    expect(MqttStatus.fromPayload([0, 0]).state, MqttLinkState.notSet);
+    expect(() => MqttStatus.fromPayload([2, 5, 1]), throwsFormatException); // host bị cắt
+    expect(() => MqttStatus.fromPayload([7, 0]), throwsFormatException); // trạng thái lạ
   });
 }

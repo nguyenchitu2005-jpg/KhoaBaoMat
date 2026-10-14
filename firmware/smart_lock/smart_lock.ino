@@ -11,9 +11,9 @@
 // Lenh quan ly (chi admin = dien thoai ghep doi dau tien): xem config.h. Dinh dang goi: KIEN_TRUC_APP.md muc 4.
 // Serial: 115200 baud
 
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLE2902.h>
+// NimBLE thay cho BLE (Bluedroid) cua loi Arduino: it hon ~50 KB RAM, du cho TLS cua may chu trung gian
+// khi chay chung BLE + Wi-Fi (Bluedroid thi mbedtls het RAM: -0x7F00).
+#include <NimBLEDevice.h>
 #include <SPI.h>
 #include <MFRC522.h>
 #include <Adafruit_Fingerprint.h>
@@ -22,25 +22,41 @@
 #include "storage.h"
 #include "access_store.h"
 #include "access_log.h"
+#include "wifi_link.h"
+#include "lan_link.h"
+#include "mqtt_link.h"
+#include <esp_mac.h>
 
 PhoneStore store;
 AccessStore acl;
 AccessLog accessLog;
+WifiLink wifi;
+LanLink lan;
+MqttLink mqtt;
+
+// Duong truyen cua goi dang xu ly: phan hoi luon quay ve dung duong da gui lenh.
+// Ngoai luc xu ly goi LAN / MQTT, curLink = BLE (ghep doi, ban phim... chi lien quan BLE).
+enum Link : uint8_t { LINK_BLE = 0, LINK_LAN = 1, LINK_MQTT = 2, LINK_COUNT };
+uint8_t curLink = LINK_BLE;
 MFRC522 rfid(RC522_SS, RC522_RST);
 Adafruit_Fingerprint finger(&Serial2);
-BLECharacteristic *evtChar;
+NimBLECharacteristic *evtChar;
+
+// Loi Arduino tu giai phong bo nho BLE luc khoi dong neu khong thay thu vien BLE cua no dang dung.
+// Dung NimBLE nen phai bao "co dung BLE", neu khong NimBLE khong khoi dong duoc bo dieu khien.
+extern "C" bool bleInUse(void) { return true; }
 
 // ---- Goi BLE nhan duoc: callback chi chep vao day, loop() xu ly ----
-uint8_t rxBuf[160];
+uint8_t rxBuf[LAN_MAX_FRAME];
 volatile size_t rxLen = 0;
 volatile bool rxReady = false;
 volatile bool clientConnected = false;
 volatile bool clientDropped = false;
 
-// ---- Challenge ----
-uint8_t pendingNonce[8];
-bool nonceValid = false;
-uint32_t nonceAt = 0;
+// ---- Challenge: moi duong truyen 1 nonce rieng (BLE va LAN dung cung luc khong de len nhau) ----
+uint8_t pendingNonce[LINK_COUNT][8];
+bool nonceValid[LINK_COUNT] = {false};
+uint32_t nonceAt[LINK_COUNT] = {0};
 
 // ---- Relay ----
 bool relayOn = false;
@@ -73,6 +89,7 @@ struct {
   uint32_t deadline;
   uint8_t step;      // van tay: 0 = cho dat tay lan 1, 1 = cho nhac tay, 2 = cho dat tay lan 2
   uint8_t fingerId;
+  uint8_t link;      // duong truyen da ra lenh: phan hoi gui ve duong nay
 } job;
 
 // ---- Ma PIN dang go ----
@@ -95,8 +112,14 @@ static void putBe32(uint8_t *b, uint32_t v) {
 
 // ======================== Phan hoi ra ngoai ========================
 void sendFrame(const uint8_t *data, size_t len) {
+  if (curLink == LINK_LAN) { lan.send(data, len); return; }
+  if (curLink == LINK_MQTT) { mqtt.send(data, len); return; }
   evtChar->setValue(data, len);
   evtChar->notify();
+}
+
+bool linkConnected(uint8_t link) {
+  return link == LINK_LAN ? lan.connected() : link == LINK_MQTT ? mqtt.connected() : clientConnected;
 }
 
 void beep(int ms, int freq = 2700) {
@@ -123,6 +146,15 @@ void unlockNow(const char *who, uint8_t method, uint8_t whoId, uint32_t holdMs =
   unlockCount++;
   accessLog.add(method, whoId, LOG_OK);
   Serial.printf("[KHOA] MO - %s #%u (lan %lu)\n", who, whoId, (unsigned long)unlockCount);
+  beep(80);
+}
+
+// Nut trong nha: dang khoa -> mo toi da TOGGLE_OPEN_MS, dang mo -> khoa ngay.
+// The, van tay, PIN, app thi goi unlockNow: mo UNLOCK_MS roi tu khoa nhu khoa cua that.
+void toggleLock(const char *who, uint8_t method, uint8_t whoId) {
+  if (!relayOn) { unlockNow(who, method, whoId, TOGGLE_OPEN_MS); return; }
+  setRelay(false);
+  Serial.printf("[KHOA] DONG - %s #%u\n", who, whoId);
   beep(80);
 }
 
@@ -154,7 +186,10 @@ void sendSealedReply(Phone *p, uint8_t cmd, uint8_t result, uint32_t counter,
 // Ket thuc viec dang ky dang cho: gui phan hoi cho dien thoai da ra lenh
 void finishJob(uint8_t result, const uint8_t *payload = nullptr, size_t payloadLen = 0) {
   Phone *p = store.find(job.phoneId);
-  if (p && clientConnected) sendSealedReply(p, job.cmd, result, job.counter, payload, payloadLen);
+  uint8_t prev = curLink;
+  curLink = job.link;
+  if (p && linkConnected(job.link)) sendSealedReply(p, job.cmd, result, job.counter, payload, payloadLen);
+  curLink = prev;
   Serial.printf("[DANG KY] %s xong, ket qua 0x%02X\n", job.cmd == CMD_ENROLL_CARD ? "The" : "Van tay", result);
   job.cmd = 0;
   fpWaitLift = true;  // ngon tay vua dang ky con tren cam bien -> khong coi la 1 lan mo cua
@@ -164,7 +199,10 @@ void finishJob(uint8_t result, const uint8_t *payload = nullptr, size_t payloadL
 
 void sendProgress(uint8_t step) {
   uint8_t out[3] = {FRAME_PROGRESS, job.cmd, step};
-  if (clientConnected) sendFrame(out, sizeof(out));
+  uint8_t prev = curLink;
+  curLink = job.link;
+  if (linkConnected(job.link)) sendFrame(out, sizeof(out));
+  curLink = prev;
 }
 
 // id = 0xFF: xoa het. Xoa ca mau trong AS608 lan danh dau trong NVS.
@@ -213,6 +251,7 @@ void handleAdmin(Phone *p, uint8_t cmd, uint32_t counter, const uint8_t *arg, si
       job.counter = counter;
       job.step = 0;
       job.fingerId = fid;
+      job.link = curLink;
       job.deadline = millis() + (isCard ? ENROLL_CARD_MS : ENROLL_FINGER_MS);
       Serial.println(isCard ? "[DANG KY] Dua THE MOI lai gan dau doc (15 giay)"
                             : "[DANG KY] Dat NGON TAY len cam bien (2 lan)");
@@ -273,6 +312,54 @@ void handleAdmin(Phone *p, uint8_t cmd, uint32_t counter, const uint8_t *arg, si
       }
       break;
     }
+    case CMD_SET_MQTT: {
+      // [do dai host][host][cong 2B][do dai user][user][do dai mat khau][mat khau]; do dai host 0 = tat.
+      // Khong cho doi qua chinh duong tu xa: nhap sai la mat luon duong dieu khien khi dang o xa.
+      if (curLink == LINK_MQTT) { sendSealedReply(p, cmd, RES_DENIED, counter); break; }
+      size_t i = 0;
+      auto field = [&](String &s) -> bool {
+        if (i >= argLen || arg[i] > MQTT_FIELD_MAX || i + 1 + arg[i] > argLen) return false;
+        s = String((const char *)arg + i + 1, arg[i]);
+        i += 1 + arg[i];
+        return true;
+      };
+      String host, user, pass;
+      uint16_t port = 0;
+      bool ok = field(host);
+      if (ok && host.length()) {
+        ok = i + 2 <= argLen;
+        if (ok) { port = ((uint16_t)arg[i] << 8) | arg[i + 1]; i += 2; }
+        ok = ok && port != 0 && field(user) && field(pass);
+      }
+      if (!ok || i != argLen) { sendSealedReply(p, cmd, RES_BAD_ARG, counter); break; }
+      sendSealedReply(p, cmd, RES_OK, counter);  // tra loi truoc: ket noi may chu mat vai giay
+      mqtt.set(host, port, user, pass);
+      break;
+    }
+    case CMD_MQTT_STATUS: {
+      uint8_t out[2 + MQTT_FIELD_MAX];
+      sendSealedReply(p, cmd, RES_OK, counter, out, mqtt.status(out));
+      break;
+    }
+    case CMD_SET_WIFI: {
+      // Khong cho doi Wi-Fi qua duong tu xa (nhap sai -> khoa mat mang, khong sua tu xa duoc nua)
+      if (curLink == LINK_MQTT) { sendSealedReply(p, cmd, RES_DENIED, counter); break; }
+      // [do dai ten][ten][do dai mat khau][mat khau]; do dai ten 0 = quen Wi-Fi.
+      // Mat khau: 0 (mang mo) hoac 8..63 ky tu (WPA2).
+      bool ok = argLen >= 2 && arg[0] <= WIFI_SSID_MAX && argLen >= (size_t)arg[0] + 2;
+      uint8_t passLen = ok ? arg[1 + arg[0]] : 0;
+      ok = ok && argLen == (size_t)arg[0] + 2 + passLen && passLen <= WIFI_PASS_MAX &&
+           (passLen == 0 || passLen >= 8) && (arg[0] > 0 || passLen == 0);
+      if (!ok) { sendSealedReply(p, cmd, RES_BAD_ARG, counter); break; }
+      sendSealedReply(p, cmd, RES_OK, counter);  // tra loi truoc: vao mang mat vai giay, app hoi lai bang CMD_WIFI_STATUS
+      wifi.set(String((const char *)arg + 1, arg[0]), String((const char *)arg + 2 + arg[0], passLen));
+      break;
+    }
+    case CMD_WIFI_STATUS: {
+      uint8_t out[8 + WIFI_SSID_MAX];
+      sendSealedReply(p, cmd, RES_OK, counter, out, wifi.status(out));
+      break;
+    }
     case CMD_LIST_ACCESS: {
       // [co PIN][mat na van tay 4B][han ma khach 4B][so the][{chi so, do dai, UID}...] - the nao khong vua goi thi bi cat
       uint8_t out[MAX_REPLY_PAYLOAD];
@@ -305,7 +392,7 @@ void handleSealed(const uint8_t *f, size_t n) {
   if (!p) { Serial.printf("[BLE] keyId %u chua ghep doi / da bi xoa - bo qua\n", f[1]); return; }
 
   size_t ctLen = n - 2 - 12 - 16;
-  uint8_t plain[96];
+  uint8_t plain[LAN_MAX_FRAME - 30];  // goi = [loai][keyId][IV 12][ban ma][tag 16]; tham so lenh bat dau tu plain[17]
   if (ctLen > sizeof(plain)) return;
   if (!gcmOpen(p->key, p->id, f + 2, f + 14, ctLen, f + n - 16, plain)) {
     Serial.println("[BLE] TU CHOI: sai tag GCM (goi bi sua hoac sai khoa)");
@@ -314,8 +401,9 @@ void handleSealed(const uint8_t *f, size_t n) {
 
   uint8_t cmd = plain[0];
   uint32_t counter = be32(plain + 1);
-  bool nonceOk = nonceValid && millis() - nonceAt < NONCE_TTL_MS && memcmp(plain + 5, pendingNonce, 8) == 0;
-  nonceValid = false;  // nonce chi dung 1 lan
+  bool nonceOk = nonceValid[curLink] && millis() - nonceAt[curLink] < NONCE_TTL_MS &&
+                 memcmp(plain + 5, pendingNonce[curLink], 8) == 0;
+  nonceValid[curLink] = false;  // nonce chi dung 1 lan
   if (!nonceOk) {
     Serial.printf("[BLE] TU CHOI: nonce sai/het han (dien thoai #%u)\n", p->id);
     sendSealedReply(p, cmd, RES_BAD_NONCE, counter);
@@ -333,7 +421,8 @@ void handleSealed(const uint8_t *f, size_t n) {
   switch (cmd) {
     case CMD_UNLOCK:
       sendSealedReply(p, cmd, RES_OK, counter);
-      unlockNow("app, dien thoai", LOG_APP, p->id);
+      if (curLink == LINK_MQTT) unlockNow("app tu xa (internet)", LOG_REMOTE, p->id);
+      else unlockNow("app, dien thoai", LOG_APP, p->id);
       break;
     case CMD_LOCK:
       setRelay(false);
@@ -611,13 +700,13 @@ void pollFinger(uint32_t now) {
 }
 
 // ======================== BLE ========================
-class CmdCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *c) override {
+class CmdCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *c, NimBLEConnInfo &) override {
     if (rxReady) return;  // goi truoc chua xu ly xong -> bo (app luon cho phan hoi moi gui tiep)
-    String v = c->getValue();
+    NimBLEAttValue v = c->getValue();
     size_t n = v.length();
     if (n == 0 || n > sizeof(rxBuf)) return;
-    memcpy(rxBuf, v.c_str(), n);
+    memcpy(rxBuf, v.data(), n);
     rxLen = n;
     rxReady = true;
   }
@@ -628,18 +717,24 @@ volatile uint32_t connectCount = 0, dropCount = 0;
 volatile uint8_t lastDropReason = 0;
 uint8_t lastPeer[6] = {0};
 
-class ServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer *s, esp_ble_gatts_cb_param_t *param) override {
+// NimBLE luu dia chi theo thu tu nguoc (byte cuoi truoc) -> dao lai cho de doc
+static void copyPeer(const NimBLEConnInfo &info) {
+  const uint8_t *a = info.getAddress().getVal();
+  for (int i = 0; i < 6; i++) lastPeer[i] = a[5 - i];
+}
+
+class ServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer *, NimBLEConnInfo &info) override {
     clientConnected = true;
     connectCount++;
-    memcpy(lastPeer, param->connect.remote_bda, 6);
+    copyPeer(info);
   }
-  void onDisconnect(BLEServer *s, esp_ble_gatts_cb_param_t *param) override {
+  void onDisconnect(NimBLEServer *, NimBLEConnInfo &info, int reason) override {
     clientConnected = false;
     clientDropped = true;
     dropCount++;
-    lastDropReason = param->disconnect.reason;
-    memcpy(lastPeer, param->disconnect.remote_bda, 6);
+    lastDropReason = reason & 0xFF;  // ma HCI (vd 0x13 = dien thoai tu ngat)
+    copyPeer(info);
   }
 };
 
@@ -647,17 +742,20 @@ void handleFrame(const uint8_t *f, size_t n) {
   switch (f[0]) {
     case FRAME_CHALLENGE_REQ:
       if (n != 2 || !store.find(f[1])) return;  // may la khong xin duoc nonce -> khong ghi de nonce cua may da ghep
-      esp_fill_random(pendingNonce, sizeof(pendingNonce));
-      nonceValid = true;
-      nonceAt = millis();
+      esp_fill_random(pendingNonce[curLink], 8);
+      nonceValid[curLink] = true;
+      nonceAt[curLink] = millis();
       {
         uint8_t out[9] = {FRAME_CHALLENGE};
-        memcpy(out + 1, pendingNonce, 8);
+        memcpy(out + 1, pendingNonce[curLink], 8);
         sendFrame(out, sizeof(out));
       }
       break;
     case FRAME_SEALED_CMD: handleSealed(f, n); break;
-    case FRAME_PAIR_REQ: handlePairRequest(f, n); break;
+    case FRAME_PAIR_REQ:
+      // Ghep doi chi qua BLE: chung minh dien thoai dang o canh khoa (go ma tren ban phim)
+      if (curLink == LINK_BLE) handlePairRequest(f, n);
+      break;
     default: Serial.printf("[BLE] Goi la 0x%02X (%u byte), bo qua\n", f[0], (unsigned)n);
   }
 }
@@ -709,16 +807,7 @@ void pollButton(uint32_t now) {
   }
   if (down && !raw) {
     down = false;
-    if (stage == 0 && now - downSince < 1000) {
-      // Bam mot nhip: dang khoa -> mo (toi da BUTTON_OPEN_MS), dang mo -> khoa ngay
-      if (relayOn) {
-        setRelay(false);
-        Serial.println("[KHOA] DONG - nut trong nha");
-        beep(80);
-      } else {
-        unlockNow("nut trong nha", LOG_BUTTON, 0, BUTTON_OPEN_MS);
-      }
-    }
+    if (stage == 0 && now - downSince < 1000) toggleLock("nut trong nha", LOG_BUTTON, 0);
   }
 }
 
@@ -778,22 +867,32 @@ void setup() {
   fpOk = finger.verifyPassword();
   Serial.println(fpOk ? "[AS608] OK" : "[AS608] LOI: khong ket noi duoc cam bien van tay");
 
-  BLEDevice::init(LOCK_BLE_NAME);
-  BLEDevice::setMTU(247);
-  BLEServer *server = BLEDevice::createServer();
+  NimBLEDevice::init(LOCK_BLE_NAME);
+  NimBLEDevice::setMTU(247);
+  NimBLEServer *server = NimBLEDevice::createServer();
   server->setCallbacks(new ServerCallbacks());
   server->advertiseOnDisconnect(true);  // thu vien tu quang ba lai khi mat ket noi
-  BLEService *service = server->createService(SERVICE_UUID);
-  BLECharacteristic *cmdChar = service->createCharacteristic(CMD_UUID, BLECharacteristic::PROPERTY_WRITE);
+  NimBLEService *service = server->createService(SERVICE_UUID);
+  NimBLECharacteristic *cmdChar = service->createCharacteristic(CMD_UUID, NIMBLE_PROPERTY::WRITE);
   cmdChar->setCallbacks(new CmdCallbacks());
-  evtChar = service->createCharacteristic(EVT_UUID, BLECharacteristic::PROPERTY_NOTIFY);
-  evtChar->addDescriptor(new BLE2902());
+  evtChar = service->createCharacteristic(EVT_UUID, NIMBLE_PROPERTY::NOTIFY);  // NimBLE tu them descriptor 2902
   service->start();
-  BLEAdvertising *adv = BLEDevice::getAdvertising();
-  adv->addServiceUUID(SERVICE_UUID);
-  adv->setScanResponse(true);
-  BLEDevice::startAdvertising();
-  Serial.printf("[BLE] Dang quang ba '%s', dia chi %s\n", LOCK_BLE_NAME, BLEDevice::getAddress().toString().c_str());
+  // Goi quang ba toi da 31 byte: UUID 128-bit o goi chinh (app loc theo UUID), ten o goi tra loi quet
+  NimBLEAdvertisementData advData, scanData;
+  advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+  advData.addServiceUUID(NimBLEUUID(SERVICE_UUID));
+  scanData.setName(LOCK_BLE_NAME);
+  NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+  adv->setAdvertisementData(advData);
+  adv->setScanResponseData(scanData);
+  adv->start();
+  Serial.printf("[BLE] Dang quang ba '%s', dia chi %s\n", LOCK_BLE_NAME, NimBLEDevice::getAddress().toString().c_str());
+  wifi.begin();  // co Wi-Fi da luu thi tu ket noi + lay gio NTP
+  uint8_t btMac[6];
+  esp_read_mac(btMac, ESP_MAC_BT);  // = dia chi BLE: app dung dia chi nay de tim dung khoa trong mang
+  lan.setId(btMac);
+  mqtt.begin(btMac);  // co cau hinh may chu thi tu ket noi khi co Wi-Fi
+  Serial.printf("[KHOA] RAM trong %u byte (khoi lon nhat %u)\n", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
   beep(60);
 }
 
@@ -809,9 +908,32 @@ void loop() {
   }
   if (clientDropped) {
     clientDropped = false;
-    nonceValid = false;
-    if (pend.active) endPairing(0xFE);    // app ngat ket noi giua chung -> huy ghep doi
-    if (job.cmd) finishJob(RES_TIMEOUT);  // ... va huy dang ky dang cho
+    nonceValid[LINK_BLE] = false;
+    if (pend.active) endPairing(0xFE);                           // app ngat ket noi giua chung -> huy ghep doi
+    if (job.cmd && job.link == LINK_BLE) finishJob(RES_TIMEOUT);  // ... va huy dang ky dang cho qua BLE
+  }
+
+  // Lenh qua Wi-Fi trong nha: cung goi, cung cach xu ly nhu BLE; phan hoi quay ve LAN
+  {
+    uint8_t lf[sizeof(rxBuf)];
+    bool lanDropped;
+    size_t ln = lan.poll(now, wifi.connected(), lf, sizeof(lf), lanDropped);
+    if (lanDropped) {
+      nonceValid[LINK_LAN] = false;
+      if (job.cmd && job.link == LINK_LAN) finishJob(RES_TIMEOUT);
+    }
+    if (ln) {
+      curLink = LINK_LAN;
+      handleFrame(lf, ln);
+      curLink = LINK_BLE;
+    }
+    // Lenh tu xa qua may chu trung gian: cung goi, phan hoi quay ve MQTT
+    size_t mn = mqtt.poll(wifi.connected(), lf, sizeof(lf));
+    if (mn) {
+      curLink = LINK_MQTT;
+      handleFrame(lf, mn);
+      curLink = LINK_BLE;
+    }
   }
   static uint32_t lastConnLog = 0, loggedConnects = 0, loggedDrops = 0;
   if (now - lastConnLog >= 1000 && (connectCount != loggedConnects || dropCount != loggedDrops)) {
@@ -843,6 +965,8 @@ void loop() {
     setRelay(false);
     Serial.println("[KHOA] Tu dong khoa lai");
   }
+
+  if (uint32_t t = wifi.poll(now)) accessLog.syncTime(t);  // gio NTP: dung ca khi chua co dien thoai nao ket noi
 
   if (pairingMode) {
     if ((int32_t)(now - pairDeadline) >= 0) {

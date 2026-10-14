@@ -21,13 +21,29 @@ const uint8_t KP_COLS[4] = {25, 33, 32, 21};
 const char KP_KEYS[4][4] = {{'1','2','3','A'},{'4','5','6','B'},{'7','8','9','C'},{'*','0','#','D'}};
 
 // ---- Thoi gian ----
-const uint32_t UNLOCK_MS      = 5000;   // relay dong 5 giay roi tu khoa
-const uint32_t BUTTON_OPEN_MS = 30000;  // nut trong nha: giu mo toi da 30 giay (chinh theo do nong cua chot), bam lan nua de khoa
+const uint32_t UNLOCK_MS      = 5000;   // the, van tay, PIN, app: relay dong 5 giay roi tu khoa
+const uint32_t TOGGLE_OPEN_MS = 30000;  // nut trong nha: giu mo toi da 30 giay (chinh theo do nong cua chot), bam lan nua de khoa
 const uint32_t NONCE_TTL_MS   = 10000;
 const uint32_t HOLD_PAIR_MS   = 5000;   // giu nut 5 giay -> che do ghep doi
 const uint32_t HOLD_RESET_MS  = 15000;  // giu nut 15 giay -> xoa het dien thoai
 const uint32_t PAIR_WINDOW_MS = 60000;  // che do ghep doi mo trong 60 giay
 const uint8_t  PAIR_MAX_TRIES = 3;      // go sai ma 3 lan -> huy ghep doi
+
+// ---- Wi-Fi + NTP (chi Wi-Fi 2,4 GHz) ----
+const uint8_t  WIFI_SSID_MAX   = 32;
+const uint8_t  WIFI_PASS_MAX   = 63;
+const uint32_t WIFI_CONNECT_MS = 20000;    // qua 20 giay chua vao duoc mang -> bao loi (thu vien van tu thu lai)
+const uint32_t NTP_RESYNC_MS   = 3600000;  // lay lai gio chuan moi gio
+const uint16_t LAN_PORT        = 4545;     // TCP: lenh qua Wi-Fi trong nha; UDP: app tim khoa
+const uint32_t LAN_IDLE_MS     = 120000;   // dien thoai im lang 2 phut -> dong ket noi LAN (app tu ket noi lai)
+const size_t   LAN_MAX_FRAME   = 220;      // goi lon nhat app gui (moi duong: BLE / LAN / MQTT); BLE MTU 247 -> toi da 244
+// ---- May chu trung gian MQTT (dieu khien tu xa) ----
+// Chu de: khoabaomat/<dia chi BLE 12 hex>/c (lenh), /e (phan hoi), /s (trang thai "1"/"0", giu lai tren may chu)
+#define MQTT_TOPIC_PREFIX "khoabaomat"
+const uint8_t  MQTT_FIELD_MAX = 64;      // do dai toi da cua host / user / mat khau
+const uint16_t MQTT_KEEPALIVE_S = 30;    // may chu bao khoa offline ~45 giay sau khi mat mang
+#define NTP_SERVER_1 "pool.ntp.org"
+#define NTP_SERVER_2 "time.google.com"
 
 // ---- RFID RC522 (SPI) + van tay AS608 (UART2) ----
 #define RC522_SS   5
@@ -93,6 +109,10 @@ const uint32_t SAME_CARD_MS = 2000;  // bo qua cung 1 the quet lien tuc
 #define CMD_SET_GUEST_PIN 0x35  // admin; [het han unix 4B][do dai][cac chu so ASCII] (do dai 0 = xoa ma khach)
 #define CMD_LIST_PHONES   0x37  // admin; -> [so dien thoai][{keyId, vai tro}...]
 #define CMD_REVOKE_PHONE  0x41  // admin; [keyId] - thu hoi 1 dien thoai (khong tu thu hoi chinh minh)
+#define CMD_SET_WIFI      0x38  // admin; [do dai ten][ten][do dai mat khau][mat khau] (do dai ten 0 = quen Wi-Fi)
+#define CMD_WIFI_STATUS   0x39  // admin; -> [trang thai][song dBm][IP 4B][gio NTP da dong bo][do dai ten][ten]
+#define CMD_SET_MQTT      0x3A  // admin; [do dai host][host][cong 2B][do dai user][user][do dai mat khau][mat khau] (do dai host 0 = tat)
+#define CMD_MQTT_STATUS   0x3B  // admin; -> [trang thai][do dai host][host]
 #define CMD_LIST_ACCESS   0x36  // admin; -> [co PIN][mat na van tay 4B][han ma khach 4B, 0 = khong co][so the][{chi so, do dai, UID}...]
 
 // Ket qua lenh
@@ -115,6 +135,7 @@ const uint32_t SAME_CARD_MS = 2000;  // bo qua cung 1 the quet lien tuc
 #define LOG_FINGER 3
 #define LOG_PIN    4
 #define LOG_BUTTON 5
+#define LOG_REMOTE 6  // mo tu app qua may chu trung gian (internet), ai = so dien thoai
 #define LOG_OK          0
 #define LOG_UNKNOWN     1  // the / van tay chua dang ky
 #define LOG_WRONG_PIN   2

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../../../core/di/injection.dart';
 import '../../../core/storage/lock_key_store.dart';
@@ -23,6 +24,18 @@ class ScanPage extends StatelessWidget {
 class _ScanView extends StatelessWidget {
   const _ScanView();
 
+  /// Đã ghép đôi thì vào trang khoá (tự chọn Wi-Fi hoặc Bluetooth), chưa thì sang ghép đôi (chỉ qua Bluetooth).
+  Future<void> _open(BuildContext context, BluetoothDevice device) async {
+    await context.read<ScanCubit>().stop();
+    final paired = await sl<LockKeyStore>().read(device.remoteId.str) != null;
+    if (!context.mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => paired ? DevicePage(device: device) : PairingPage(device: device),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -31,38 +44,41 @@ class _ScanView extends StatelessWidget {
         listenWhen: (a, b) => b.error != null && a.error != b.error,
         listener: (context, s) =>
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s.error!))),
-        builder: (context, s) {
-          if (s.results.isEmpty) {
-            return _EmptyHint(scanning: s.scanning);
-          }
-          return ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: s.results.length,
-            separatorBuilder: (_, _) => const SizedBox(height: 8),
-            itemBuilder: (context, i) {
-              final r = s.results[i];
-              final name = r.device.platformName.isNotEmpty ? r.device.platformName : 'Khoabaomat';
-              return Card(
-                child: ListTile(
-                  leading: const Icon(Icons.lock_outline_rounded, size: 32),
-                  title: Text(name),
-                  subtitle: Text(r.device.remoteId.str),
-                  trailing: _Rssi(r.rssi),
-                  onTap: () async {
-                    await context.read<ScanCubit>().stop();
-                    final paired = await sl<LockKeyStore>().read(r.device.remoteId.str) != null;
-                    if (!context.mounted) return;
-                    await Navigator.of(context).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => paired ? DevicePage(device: r.device) : PairingPage(device: r.device),
-                      ),
-                    );
-                  },
-                ),
-              );
-            },
-          );
-        },
+        builder: (context, s) => FutureBuilder<List<String>>(
+          future: sl<LockKeyStore>().pairedLockIds(),
+          builder: (context, paired) {
+            // Khoá đã ghép đôi nhưng không quét thấy qua Bluetooth (Bluetooth tắt / ở xa):
+            // vẫn mở được nếu điện thoại cùng Wi-Fi với khoá.
+            final seen = {for (final r in s.results) r.device.remoteId.str};
+            final offline = [for (final id in paired.data ?? const <String>[]) if (!seen.contains(id)) id];
+            if (s.results.isEmpty && offline.isEmpty) return _EmptyHint(scanning: s.scanning);
+            return ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                for (final id in offline)
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.wifi_rounded, size: 32),
+                      title: const Text('Khoabaomat (đã ghép đôi)'),
+                      subtitle: Text('$id\nMở qua Wi-Fi nếu điện thoại cùng mạng với khoá'),
+                      isThreeLine: true,
+                      onTap: () => _open(context, BluetoothDevice.fromId(id)),
+                    ),
+                  ),
+                for (final r in s.results)
+                  Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.lock_outline_rounded, size: 32),
+                      title: Text(r.device.platformName.isNotEmpty ? r.device.platformName : 'Khoabaomat'),
+                      subtitle: Text(r.device.remoteId.str),
+                      trailing: _Rssi(r.rssi),
+                      onTap: () => _open(context, r.device),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
       ),
       floatingActionButton: BlocBuilder<ScanCubit, ScanState>(
         builder: (context, s) => FloatingActionButton.extended(

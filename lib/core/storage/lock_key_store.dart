@@ -53,6 +53,12 @@ class LockKeyStore {
 
   Future<void> remove(String lockId) => _storage.delete(key: _name(lockId));
 
+  /// Địa chỉ các khoá đã ghép đôi (để mở được khoá qua Wi-Fi khi không quét thấy qua Bluetooth).
+  Future<List<String>> pairedLockIds() async => [
+        for (final k in (await _storage.readAll()).keys)
+          if (k.startsWith('lock.')) k.substring('lock.'.length),
+      ];
+
   /// Xoá khoá thử nghiệm toàn số 0 còn sót từ giai đoạn 1 (trước khi có ghép đôi).
   Future<void> purgeDemoKeys() async {
     final all = await _storage.readAll();
