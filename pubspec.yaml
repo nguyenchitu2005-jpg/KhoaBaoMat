@@ -41,6 +41,11 @@ dependencies:
   flutter_bloc: ^9.1.1
   equatable: ^3.0.0
   get_it: ^9.3.0
+  camera: 0.12.1
+  google_mlkit_face_detection: 0.15.1
+  tflite_flutter: 0.12.1
+  image: 4.10.1
+  mqtt_client: ^10.12.0
   # Ban sua trong packages/ (goc pub.dev 0.5.2 dung jcenter, khong build duoc voi AGP 9)
 dev_dependencies:
   flutter_test:
@@ -67,6 +72,8 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  assets:
+    - assets/models/facenet_512.tflite
 
   # To add assets to your application, add an assets section, like this:
   # assets:

@@ -3,6 +3,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/di/injection.dart';
+import '../../../core/link/lock_link.dart';
 import '../../access/presentation/access_page.dart';
 import '../../access/presentation/logs_page.dart';
 import '../../biometric/data/biometric_auth_service.dart';
@@ -138,8 +139,12 @@ class _LinkBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final (icon, text, color) = switch (state.link) {
-      LinkState.connecting => (Icons.bluetooth_searching_rounded, 'Đang kết nối…', cs.secondary),
-      LinkState.connected => (Icons.bluetooth_connected_rounded, 'Đã kết nối', cs.primary),
+      LinkState.connecting => (Icons.bluetooth_searching_rounded, 'Đang tìm khoá (Wi-Fi, rồi Bluetooth)…', cs.secondary),
+      LinkState.connected when state.route == LockRoute.lan =>
+        (Icons.wifi_rounded, 'Đã kết nối qua Wi-Fi trong nhà', cs.primary),
+      LinkState.connected when state.route == LockRoute.remote =>
+        (Icons.cloud_done_rounded, 'Đã kết nối từ xa (qua máy chủ trung gian)', cs.primary),
+      LinkState.connected => (Icons.bluetooth_connected_rounded, 'Đã kết nối qua Bluetooth', cs.primary),
       LinkState.disconnected => (Icons.bluetooth_disabled_rounded, 'Chưa kết nối', cs.error),
     };
     return Card(

@@ -6,7 +6,8 @@ enum BiometricOutcome {
   notAvailable('Máy không hỗ trợ sinh trắc học'),
   notEnrolled('Chưa cài vân tay / khuôn mặt trong Cài đặt của máy'),
   lockedOut('Sai quá nhiều lần, sinh trắc học tạm bị khoá'),
-  failed('Xác thực thất bại');
+  failed('Xác thực thất bại'),
+  faceMismatch('Khuôn mặt không khớp – nhìn thẳng camera ở nơi đủ sáng rồi thử lại');
 
   const BiometricOutcome(this.message);
   final String message;

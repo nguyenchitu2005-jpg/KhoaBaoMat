@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/di/injection.dart';
+import '../../face/data/face_auth_service.dart';
 import '../domain/unlock_with_biometric.dart';
 import 'unlock_bloc.dart';
 
@@ -28,22 +29,27 @@ class UnlockButton extends StatelessWidget {
           }
           if (state is UnlockSucceeded) onUnlocked?.call();
         },
-        builder: (context, state) {
-          final busy = state is UnlockInProgress;
-          final label = switch (state) {
-            UnlockInProgress(step: UnlockStep.authenticating) => 'Đang xác thực…',
-            UnlockInProgress(step: UnlockStep.sending) => 'Đang mở…',
-            _ => 'Mở cửa',
-          };
-          return FilledButton.icon(
-            style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(56)),
-            onPressed: busy ? null : () => context.read<UnlockBloc>().add(UnlockPressed(lockId)),
-            icon: busy
-                ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.lock_open_rounded),
-            label: Text(label),
-          );
-        },
+        builder: (context, state) => FutureBuilder<bool>(
+          // đã đăng ký khuôn mặt thì bấm nút là quét mặt (FaceAuthService), nên ghi rõ trên nút
+          future: sl<FaceAuthService>().enrolled,
+          builder: (context, face) {
+            final byFace = face.data ?? false;
+            final busy = state is UnlockInProgress;
+            final label = switch (state) {
+              UnlockInProgress(step: UnlockStep.authenticating) => byFace ? 'Đang quét khuôn mặt…' : 'Đang xác thực…',
+              UnlockInProgress(step: UnlockStep.sending) => 'Đang mở…',
+              _ => byFace ? 'Mở cửa bằng khuôn mặt' : 'Mở cửa',
+            };
+            return FilledButton.icon(
+              style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(56)),
+              onPressed: busy ? null : () => context.read<UnlockBloc>().add(UnlockPressed(lockId)),
+              icon: busy
+                  ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                  : Icon(byFace ? Icons.face_rounded : Icons.lock_open_rounded),
+              label: Text(label),
+            );
+          },
+        ),
       ),
     );
   }

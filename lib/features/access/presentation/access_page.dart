@@ -1,12 +1,23 @@
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../core/di/injection.dart';
+import '../../device/data/lan_lock_data_source.dart';
+import '../../device/data/mqtt_lock_data_source.dart';
+import '../../face/data/face_auth_service.dart';
 import '../domain/access_admin.dart';
 import 'access_cubit.dart';
 
-/// Trang Quản lý truy cập (chỉ admin): mã PIN, thẻ RFID, vân tay trên khoá.
+/// Camera + ML Kit nhận diện khuôn mặt chỉ chạy trên Android/iOS (Windows vẫn dùng sinh trắc học của máy).
+bool get _faceSupported =>
+    defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS;
+
+/// Trang Quản lý truy cập (chỉ admin): mã PIN, thẻ RFID, vân tay, điện thoại, Wi-Fi của khoá,
+/// và khuôn mặt dùng để xác nhận trên app.
 class AccessPage extends StatelessWidget {
   const AccessPage({super.key, required this.lockId});
 
@@ -15,7 +26,7 @@ class AccessPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
-      create: (_) => AccessCubit(sl<AccessAdmin>(), lockId)..load(),
+      create: (_) => AccessCubit(sl<AccessAdmin>(), lockId, sl<LanLockDataSource>(), sl<MqttLockDataSource>())..load(),
       child: const _AccessView(),
     );
   }
@@ -30,6 +41,31 @@ class _AccessView extends StatelessWidget {
     String two(int n) => n.toString().padLeft(2, '0');
     return 'Hết hạn ${two(expiry.hour)}:${two(expiry.minute)} ngày ${two(expiry.day)}/${two(expiry.month)}';
   }
+
+  static String _wifiTitle(WifiStatus? w) => switch (w?.state) {
+        null => 'Khoá chưa hỗ trợ Wi-Fi',
+        WifiState.notSet => 'Chưa cài Wi-Fi',
+        WifiState.connecting => 'Đang kết nối "${w?.ssid}"…',
+        WifiState.connected => 'Đã kết nối "${w?.ssid}"',
+        WifiState.failed => 'Không vào được "${w?.ssid}"',
+      };
+
+  static String _remoteTitle(MqttStatus? m) => switch (m?.state) {
+        null => 'Khoá chưa hỗ trợ điều khiển từ xa',
+        MqttLinkState.notSet => 'Chưa cài máy chủ trung gian',
+        MqttLinkState.connecting => 'Khoá đang vào máy chủ…',
+        MqttLinkState.connected => 'Khoá đang online – mở được từ xa',
+        MqttLinkState.error => 'Khoá không vào được máy chủ ${m?.host}',
+      };
+
+  static String _wifiSubtitle(WifiStatus? w) => switch (w?.state) {
+        null => 'Nạp firmware mới cho khoá để dùng Wi-Fi',
+        WifiState.notSet => 'Khoá dùng Wi-Fi để lấy giờ chuẩn. Chỉ mạng 2,4 GHz',
+        WifiState.connecting => 'Chờ vài giây rồi bấm Làm mới',
+        WifiState.connected =>
+          'IP ${w!.ip} · sóng ${w.rssi} dBm · ${w.timeSynced ? 'giờ đã đồng bộ' : 'đang lấy giờ'}',
+        WifiState.failed => 'Kiểm tra mật khẩu; khoá chỉ dùng được Wi-Fi 2,4 GHz',
+      };
 
   /// Hỏi mã rồi hỏi thời hạn.
   Future<void> _setGuestPin(BuildContext context, AccessCubit cubit) async {
@@ -191,6 +227,70 @@ class _AccessView extends StatelessWidget {
                     ],
                   ),
                 ),
+                if (_faceSupported) ...[
+                  const SizedBox(height: 16),
+                  Text('Mở khoá bằng khuôn mặt', style: t.titleMedium),
+                  const _FaceSection(),
+                ],
+                const SizedBox(height: 16),
+                Text('Wi-Fi của khoá', style: t.titleMedium),
+                Card(
+                  child: ListTile(
+                    leading: Icon(s.wifi?.state == WifiState.connected ? Icons.wifi_rounded : Icons.wifi_off_rounded),
+                    title: Text(_wifiTitle(s.wifi)),
+                    subtitle: Text(_wifiSubtitle(s.wifi)),
+                    trailing: s.wifi == null
+                        ? null
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (s.wifi!.state != WifiState.notSet)
+                                TextButton(onPressed: s.busy ? null : () => cubit.setWifi('', ''), child: const Text('Quên')),
+                              TextButton(
+                                onPressed: s.busy
+                                    ? null
+                                    : () async {
+                                        final w = await showDialog<(String, String)>(
+                                            context: context, builder: (_) => _WifiDialog(ssid: s.wifi!.ssid));
+                                        if (w != null) await cubit.setWifi(w.$1, w.$2);
+                                      },
+                                child: Text(s.wifi!.state == WifiState.notSet ? 'Cài' : 'Đổi'),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text('Điều khiển từ xa', style: t.titleMedium),
+                Card(
+                  child: ListTile(
+                    leading: Icon(s.mqtt?.state == MqttLinkState.connected ? Icons.cloud_done_rounded : Icons.cloud_off_rounded),
+                    title: Text(_remoteTitle(s.mqtt)),
+                    subtitle: Text(s.remote == null
+                        ? 'Mở cửa khi ở xa nhà qua máy chủ trung gian MQTT (vd. HiveMQ Cloud). Khoá cần có Wi-Fi'
+                        : 'Máy này dùng ${s.remote!.host}'),
+                    isThreeLine: true,
+                    trailing: s.mqtt == null
+                        ? null
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (s.mqtt!.state != MqttLinkState.notSet || s.remote != null)
+                                TextButton(onPressed: s.busy ? null : () => cubit.setRemote(null), child: const Text('Tắt')),
+                              TextButton(
+                                onPressed: s.busy
+                                    ? null
+                                    : () async {
+                                        final m = await showDialog<MqttSettings>(
+                                            context: context, builder: (_) => _MqttDialog(initial: s.remote));
+                                        if (m != null) await cubit.setRemote(m);
+                                      },
+                                child: Text(s.remote == null ? 'Cài' : 'Đổi'),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
               ],
             ],
           ),
@@ -297,6 +397,230 @@ class _PinDialogState extends State<_PinDialog> {
           onPressed: _controller.text.length >= 4 ? () => Navigator.pop(context, _controller.text) : null,
           child: const Text('Lưu'),
         ),
+      ],
+    );
+  }
+}
+
+/// Hộp thoại nhập Wi-Fi cho khoá. Trả về (tên mạng, mật khẩu) qua Navigator.pop.
+class _WifiDialog extends StatefulWidget {
+  const _WifiDialog({required this.ssid});
+
+  final String ssid; // mạng đang cài, điền sẵn để đổi mật khẩu cho nhanh
+
+  @override
+  State<_WifiDialog> createState() => _WifiDialogState();
+}
+
+class _WifiDialogState extends State<_WifiDialog> {
+  late final _ssid = TextEditingController(text: widget.ssid);
+  final _pass = TextEditingController();
+  bool _showPass = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _ssid.dispose();
+    _pass.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final ssid = _ssid.text; // không cắt khoảng trắng: tên mạng có thể có thật
+    final pass = _pass.text;
+    if (ssid.isEmpty) return setState(() => _error = 'Nhập tên mạng');
+    if (utf8.encode(ssid).length > 32) return setState(() => _error = 'Tên mạng quá dài (tối đa 32 ký tự)');
+    if (pass.isNotEmpty && (pass.length < 8 || utf8.encode(pass).length > 63)) {
+      return setState(() => _error = 'Mật khẩu Wi-Fi gồm 8–63 ký tự (để trống nếu mạng không có mật khẩu)');
+    }
+    Navigator.pop(context, (ssid, pass));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Wi-Fi cho khoá'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TextField(
+            controller: _ssid,
+            autofocus: widget.ssid.isEmpty,
+            decoration: const InputDecoration(labelText: 'Tên mạng (SSID)'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _pass,
+            autofocus: widget.ssid.isNotEmpty,
+            obscureText: !_showPass,
+            onSubmitted: (_) => _submit(),
+            decoration: InputDecoration(
+              labelText: 'Mật khẩu',
+              errorText: _error,
+              errorMaxLines: 3,
+              suffixIcon: IconButton(
+                tooltip: _showPass ? 'Ẩn mật khẩu' : 'Hiện mật khẩu',
+                onPressed: () => setState(() => _showPass = !_showPass),
+                icon: Icon(_showPass ? Icons.visibility_off_rounded : Icons.visibility_rounded),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Khoá chỉ dùng được Wi-Fi 2,4 GHz. Mật khẩu được mã hoá khi gửi qua Bluetooth.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Huỷ')),
+        FilledButton(onPressed: _submit, child: const Text('Gửi cho khoá')),
+      ],
+    );
+  }
+}
+
+/// Khuôn mặt dùng để xác nhận trên app (mở cửa, vào trang quản lý). Lưu trên điện thoại, không gửi cho khoá.
+class _FaceSection extends StatefulWidget {
+  const _FaceSection();
+
+  @override
+  State<_FaceSection> createState() => _FaceSectionState();
+}
+
+class _FaceSectionState extends State<_FaceSection> {
+  final _face = sl<FaceAuthService>();
+  late Future<bool> _enrolled = _face.enrolled;
+  bool _busy = false;
+
+  Future<void> _run(Future<String?> Function() action, String done) async {
+    setState(() => _busy = true);
+    final error = await action();
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _enrolled = _face.enrolled;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error ?? done)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: _enrolled,
+      builder: (context, snap) {
+        final enrolled = snap.data ?? false;
+        return Card(
+          child: ListTile(
+            leading: const Icon(Icons.face_rounded),
+            title: Text(enrolled ? 'Đã đăng ký' : 'Chưa đăng ký'),
+            subtitle: Text(enrolled
+                ? 'Mở cửa và vào trang này sẽ quét khuôn mặt'
+                : 'Đang dùng vân tay / khuôn mặt của máy để xác nhận'),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (enrolled)
+                  TextButton(
+                    onPressed: _busy ? null : () => _run(_face.remove, 'Đã xoá khuôn mặt'),
+                    child: const Text('Xoá'),
+                  ),
+                TextButton(
+                  onPressed: _busy ? null : () => _run(_face.enroll, 'Đã đăng ký khuôn mặt'),
+                  child: Text(enrolled ? 'Đăng ký lại' : 'Đăng ký'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Hộp thoại nhập máy chủ trung gian MQTT (TLS). Trả về MqttSettings qua Navigator.pop.
+class _MqttDialog extends StatefulWidget {
+  const _MqttDialog({this.initial});
+
+  final MqttSettings? initial;
+
+  @override
+  State<_MqttDialog> createState() => _MqttDialogState();
+}
+
+class _MqttDialogState extends State<_MqttDialog> {
+  late final _host = TextEditingController(text: widget.initial?.host ?? '');
+  late final _port = TextEditingController(text: '${widget.initial?.port ?? 8883}');
+  late final _user = TextEditingController(text: widget.initial?.user ?? '');
+  final _pass = TextEditingController();
+  bool _showPass = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    for (final c in [_host, _port, _user, _pass]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  void _submit() {
+    // Dán cả URL (mqtts://host:8883) cũng được: chỉ lấy phần tên máy chủ
+    final host = _host.text.trim().replaceFirst(RegExp(r'^\w+://'), '').split(RegExp('[:/]')).first;
+    final port = int.tryParse(_port.text.trim());
+    final pass = _pass.text.isEmpty ? (widget.initial?.password ?? '') : _pass.text;
+    if (host.isEmpty || !host.contains('.')) return setState(() => _error = 'Nhập địa chỉ máy chủ, vd. abc123.s1.eu.hivemq.cloud');
+    if (port == null || port < 1 || port > 65535) return setState(() => _error = 'Cổng không hợp lệ (HiveMQ Cloud dùng 8883)');
+    if (_user.text.trim().isEmpty || pass.isEmpty) return setState(() => _error = 'Nhập tài khoản và mật khẩu của máy chủ');
+    Navigator.pop(context, MqttSettings(host: host, port: port, user: _user.text.trim(), password: pass));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Máy chủ trung gian'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _host,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(labelText: 'Địa chỉ (Host)', hintText: 'abc123.s1.eu.hivemq.cloud'),
+            ),
+            TextField(
+              controller: _port,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'Cổng TLS'),
+            ),
+            TextField(controller: _user, decoration: const InputDecoration(labelText: 'Tài khoản (username)')),
+            TextField(
+              controller: _pass,
+              obscureText: !_showPass,
+              onSubmitted: (_) => _submit(),
+              decoration: InputDecoration(
+                labelText: widget.initial == null ? 'Mật khẩu' : 'Mật khẩu (để trống = giữ như cũ)',
+                errorText: _error,
+                errorMaxLines: 3,
+                suffixIcon: IconButton(
+                  tooltip: _showPass ? 'Ẩn mật khẩu' : 'Hiện mật khẩu',
+                  onPressed: () => setState(() => _showPass = !_showPass),
+                  icon: Icon(_showPass ? Icons.visibility_off_rounded : Icons.visibility_rounded),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Máy chủ chỉ chuyển gói đã mã hoá, không tự mở cửa được. '
+              'Phải cài khi đang ở nhà (qua Wi-Fi trong nhà hoặc Bluetooth).',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Huỷ')),
+        FilledButton(onPressed: _submit, child: const Text('Lưu và gửi cho khoá')),
       ],
     );
   }

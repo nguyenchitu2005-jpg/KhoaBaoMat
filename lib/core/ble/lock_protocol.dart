@@ -56,6 +56,10 @@ abstract final class LockCmd {
   static const setGuestPin = 0x35;
   static const listAccess = 0x36;
   static const listPhones = 0x37;
+  static const setWifi = 0x38; // [độ dài tên][tên][độ dài mật khẩu][mật khẩu]; độ dài tên 0 = quên Wi-Fi
+  static const wifiStatus = 0x39; // → [trạng thái][sóng dBm][IP 4B][giờ NTP][độ dài tên][tên]
+  static const setMqtt = 0x3A; // [độ dài host][host][cổng 2B][độ dài user][user][độ dài mk][mk]; host rỗng = tắt
+  static const mqttStatus = 0x3B; // → [trạng thái][độ dài host][host]
   static const revokePhone = 0x41;
 }
 

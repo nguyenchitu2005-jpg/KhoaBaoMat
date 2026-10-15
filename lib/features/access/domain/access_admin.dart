@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -7,8 +8,9 @@ import 'package:equatable/equatable.dart';
 import '../../../core/ble/lock_protocol.dart';
 import '../../../core/ble/secure_command_sender.dart';
 import '../../../core/crypto/lock_crypto.dart';
+import '../../../core/link/lock_link.dart';
 import '../../../core/storage/lock_key_store.dart';
-import '../../device/data/ble_lock_data_source.dart';
+import '../../device/data/mqtt_lock_data_source.dart';
 
 String _hex(Iterable<int> bytes) =>
     bytes.map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join(':');
@@ -123,6 +125,7 @@ class LogEntry extends Equatable {
         (0, 3) => 'Mở bằng vân tay #$who',
         (0, 4) => who == 1 ? 'Mở bằng mã khách' : 'Mở bằng mã PIN',
         (0, 5) => 'Mở bằng nút trong nhà',
+        (0, 6) => 'Mở từ xa qua internet · điện thoại #$who',
         (1, 2) => 'Thẻ lạ $extra',
         (1, _) => 'Vân tay lạ',
         (2, _) => 'Sai mã PIN',
@@ -136,12 +139,61 @@ class LogEntry extends Equatable {
 
 /// Các lệnh quản lý của admin: thẻ RFID, vân tay, mã PIN, nhật ký.
 /// Khoá từ chối (0x03) nếu điện thoại không phải admin.
+enum WifiState { notSet, connecting, connected, failed }
+
+/// Trạng thái Wi-Fi của khoá. Payload WIFI_STATUS: `[trạng thái][sóng dBm][IP 4B][giờ NTP][độ dài tên][tên]`.
+class WifiStatus extends Equatable {
+  const WifiStatus({required this.state, this.ssid = '', this.rssi = 0, this.ip = '', this.timeSynced = false});
+
+  factory WifiStatus.fromPayload(List<int> p) {
+    if (p.length < 8 || p[0] >= WifiState.values.length || p.length != 8 + p[7]) {
+      throw const FormatException('Trạng thái Wi-Fi không hợp lệ');
+    }
+    return WifiStatus(
+      state: WifiState.values[p[0]],
+      rssi: p[1] >= 128 ? p[1] - 256 : p[1],
+      ip: p.sublist(2, 6).join('.'),
+      timeSynced: p[6] == 1,
+      ssid: utf8.decode(p.sublist(8), allowMalformed: true),
+    );
+  }
+
+  final WifiState state;
+  final String ssid; // mạng đã cài, rỗng = chưa cài
+  final int rssi; // độ mạnh sóng (dBm), chỉ có khi đã kết nối
+  final String ip;
+  final bool timeSynced; // đã lấy giờ chuẩn qua NTP
+
+  @override
+  List<Object?> get props => [state, ssid, rssi, ip, timeSynced];
+}
+
+enum MqttLinkState { notSet, connecting, connected, error }
+
+/// Khoá có đang vào máy chủ trung gian không. Payload MQTT_STATUS: `[trạng thái][độ dài host][host]`.
+class MqttStatus extends Equatable {
+  const MqttStatus({required this.state, this.host = ''});
+
+  factory MqttStatus.fromPayload(List<int> p) {
+    if (p.length < 2 || p[0] >= MqttLinkState.values.length || p.length != 2 + p[1]) {
+      throw const FormatException('Trạng thái máy chủ trung gian không hợp lệ');
+    }
+    return MqttStatus(state: MqttLinkState.values[p[0]], host: utf8.decode(p.sublist(2), allowMalformed: true));
+  }
+
+  final MqttLinkState state;
+  final String host; // máy chủ khoá đang dùng, rỗng = chưa cài
+
+  @override
+  List<Object?> get props => [state, host];
+}
+
 class AccessAdmin {
   AccessAdmin(this._keys, this._sender, this._ble);
 
   final LockKeyStore _keys;
   final SecureCommandSender _sender;
-  final BleLockDataSource _ble;
+  final LockTransport _ble; // đường đang dùng (BLE / Wi-Fi): nhận gói tiến trình khi đăng ký vân tay
 
   Future<Uint8List> _send(
     String lockId,
@@ -164,6 +216,37 @@ class AccessAdmin {
 
   /// Thu hồi 1 điện thoại: khoá xoá khoá AES của máy đó. Khoá từ chối nếu là chính máy này.
   Future<void> revokePhone(String lockId, int keyId) => _send(lockId, LockCmd.revokePhone, payload: [keyId]);
+
+  /// Gửi Wi-Fi cho khoá (khoá chỉ dùng được mạng 2,4 GHz). [ssid] rỗng = quên Wi-Fi.
+  /// Payload: `[độ dài tên][tên UTF-8][độ dài mật khẩu][mật khẩu]`. Đi qua kênh mã hoá như mọi lệnh khác.
+  Future<void> setWifi(String lockId, String ssid, String password) {
+    final name = utf8.encode(ssid);
+    final pass = utf8.encode(password);
+    if (name.length > 32 || pass.length > 63 || (pass.isNotEmpty && pass.length < 8) || (name.isEmpty && pass.isNotEmpty)) {
+      throw ArgumentError('Tên mạng tối đa 32 ký tự; mật khẩu để trống (mạng mở) hoặc 8–63 ký tự');
+    }
+    return _send(lockId, LockCmd.setWifi, payload: [name.length, ...name, pass.length, ...pass]);
+  }
+
+  Future<WifiStatus> wifiStatus(String lockId) async => WifiStatus.fromPayload(await _send(lockId, LockCmd.wifiStatus));
+
+  /// Gửi cấu hình máy chủ trung gian cho khoá (khoá tự vào máy chủ khi có Wi-Fi). null = tắt điều khiển từ xa.
+  /// Payload: `[độ dài host][host][cổng 2B][độ dài user][user][độ dài mật khẩu][mật khẩu]`.
+  /// Khoá từ chối lệnh này nếu gửi qua chính đường từ xa (nhập sai sẽ mất đường điều khiển khi đang ở xa).
+  Future<void> setMqtt(String lockId, MqttSettings? s) {
+    if (s == null) return _send(lockId, LockCmd.setMqtt, payload: [0]);
+    final host = utf8.encode(s.host);
+    final user = utf8.encode(s.user);
+    final pass = utf8.encode(s.password);
+    final payload = [host.length, ...host, s.port >> 8, s.port & 0xFF, user.length, ...user, pass.length, ...pass];
+    if (host.isEmpty || [host, user, pass].any((f) => f.length > 64) || s.port < 1 || s.port > 65535 ||
+        payload.length > 170) {
+      throw ArgumentError('Địa chỉ máy chủ, tài khoản, mật khẩu mỗi thứ tối đa 64 ký tự (tổng tối đa 165); cổng 1–65535');
+    }
+    return _send(lockId, LockCmd.setMqtt, payload: payload);
+  }
+
+  Future<MqttStatus> mqttStatus(String lockId) async => MqttStatus.fromPayload(await _send(lockId, LockCmd.mqttStatus));
 
   /// Khoá chờ quẹt thẻ mới tối đa 15 giây.
   Future<CardEntry> enrollCard(String lockId) async => CardEntry.fromBytes(
