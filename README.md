@@ -2,7 +2,7 @@
 
 Khoá cửa chạy trên ESP32, mở được bằng **điện thoại** (vân tay hoặc khuôn mặt), **thẻ RFID**, **vân tay** trên khoá, **mã PIN**, hoặc **nút trong nhà**. Điện thoại nói chuyện với khoá qua Bluetooth. Khi khoá có Wi-Fi thì điều khiển được thêm qua mạng trong nhà và **từ xa** qua Internet. Mọi lệnh đều được mã hoá AES-256-GCM và chống phát lại (replay).
 
-<p align="center"><b>📱 <a href="release/Khoabaomat.apk">Tải app Android (APK, 89 MB)</a></b> · Android 7.0 trở lên, máy 64-bit</p>
+<p align="center"><b>📱 <a href="release/Khoabaomat.apk?raw=true">Tải app Android (APK, 89 MB)</a></b> · Android 7.0 trở lên, máy 64-bit</p>
 
 Mục lục:
 1. [Tính năng](#1-tính-năng)
@@ -135,7 +135,7 @@ Thư mục `firmware/` còn có các chương trình test riêng từng linh ki�
 ## 4. Cài app trên điện thoại
 
 ### Cách 1: cài APK có sẵn (khuyên dùng)
-1. Tải [release/Khoabaomat.apk](release/Khoabaomat.apk) (89 MB) về điện thoại.
+1. Tải [release/Khoabaomat.apk](release/Khoabaomat.apk?raw=true) (89 MB) về điện thoại.
    - Yêu cầu Android 7.0 trở lên và **chip 64-bit (arm64)**. Gần như mọi điện thoại từ năm 2017 trở đi đều đáp ứng.
    - Máy 32-bit đời cũ thì phải tự build bằng cách 2 và bỏ tham số `--target-platform`.
 2. Mở file. Nếu Android hỏi, cho phép **"Cài ứng dụng không rõ nguồn gốc"** với trình duyệt hoặc trình quản lý file.
@@ -145,7 +145,16 @@ Thư mục `firmware/` còn có các chương trình test riêng từng linh ki�
    - Android 11 trở xuống sẽ hỏi thêm **Vị trí**. Đây là yêu cầu của Android khi quét Bluetooth, app không dùng vị trí của bạn.
 4. Điện thoại cần đã cài **khoá màn hình** (vân tay, khuôn mặt hoặc mã PIN của máy). App dùng nó để xác nhận trước mỗi lần mở cửa.
 
-Nếu Google Play Protect cảnh báo, chọn "Vẫn cài đặt". APK được ký bằng khoá debug của nhóm, không qua Play Store.
+Nếu Google Play Protect cảnh báo, chọn "Vẫn cài đặt". APK được ký bằng khoá debug, không qua Play Store.
+
+**Không cài được?**
+
+| Thông báo | Nguyên nhân và cách xử lý |
+|---|---|
+| *Ứng dụng chưa được cài đặt* / *Gói xung đột với gói hiện có* | Máy đã có bản **khoabaomat** cũ, build từ máy tính khác nên chữ ký khác. **Gỡ app cũ** (Cài đặt → Ứng dụng → khoabaomat → Gỡ cài đặt) rồi cài lại. Khoá bí mật nằm trong app cũ sẽ mất theo, nên sau đó phải ghép đôi lại (mục 5.1) |
+| *Lỗi phân tích gói* / file chỉ nặng vài chục KB | File tải về là trang web chứ không phải APK. Tải lại bằng nút **Download** (biểu tượng ⬇) trên trang file của GitHub. Kiểm tra file phải nặng khoảng 89 MB |
+| *Bị chặn cài đặt* (OPPO, Xiaomi…) | Vào Cài đặt → Bảo mật, cho phép cài app từ trình duyệt hoặc trình quản lý file đang dùng. Trên OPPO còn phải tắt "Quét ứng dụng" hoặc chọn "Vẫn cài đặt" |
+| Cài xong, mở app thì bị thoát ngay | Máy 32-bit. Build bản đầy đủ theo cách 2 (bỏ `--target-platform`) |
 
 ### Cách 2: tự build từ mã nguồn
 Cần Flutter 3.47 (Dart 3.13) và Android SDK:
