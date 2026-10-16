@@ -417,6 +417,10 @@ void handleSealed(const uint8_t *f, size_t n) {
   p->lastCounter = counter;
   store.save();  // luu bo dem: khoi dong lai van chan duoc goi cu
   accessLog.syncTime(be32(plain + 13));  // lenh da xac thuc -> tin duoc gio cua dien thoai
+  if (cmd != CMD_STATUS) {
+    static const char *const LINK_NAME[] = {"BLE", "Wi-Fi trong nha", "may chu trung gian"};
+    Serial.printf("[LENH] 0x%02X tu dien thoai #%u qua %s\n", cmd, p->id, LINK_NAME[curLink]);
+  }
 
   switch (cmd) {
     case CMD_UNLOCK:
@@ -580,6 +584,7 @@ void onPinKey(char k) {
 }
 
 void onKeyPressed(char k) {
+  Serial.println("[PHIM] Co phim duoc bam");  // khong in phim nao: tranh lo ma PIN trong log
   if (pend.active) onPairKey(k);  // dang ghep doi: ban phim dung de go ma 6 so
   else onPinKey(k);
 }
@@ -588,6 +593,14 @@ void onKeyPressed(char k) {
 bool rfidAlive() {
   byte v = rfid.PCD_ReadRegister(MFRC522::VersionReg);
   return v != 0x00 && v != 0xFF;  // 0x00 / 0xFF = khong noi chuyen duoc voi RC522
+}
+
+// RC522 bi sut ap (Wi-Fi phat song, relay/chot 12V dong cat) se tu reset: VersionReg van doc duoc nhung
+// cau hinh ve mac dinh, ANG-TEN TAT -> khong bao gio doc duoc the nua. Kiem tra cac thanh ghi PCD_Init da dat.
+bool rfidConfigured() {
+  return (rfid.PCD_ReadRegister(MFRC522::TxControlReg) & 0x03) == 0x03 &&  // ang-ten dang bat
+         rfid.PCD_ReadRegister(MFRC522::TModeReg) == 0x80 &&              // bo dinh thoi tu chay
+         rfid.PCD_ReadRegister(MFRC522::TxASKReg) == 0x40;                // dieu che 100% ASK
 }
 
 void onCard(const uint8_t *uid, uint8_t len) {
@@ -610,10 +623,18 @@ void pollRfid(uint32_t now) {
   static uint8_t lastUid[10], lastLen = 0;
   if (now - last < RFID_POLL_MS) return;
   last = now;
-  if (now - lastCheck >= 5000) {  // phat hien long day khi dang chay
+  if (now - lastCheck >= RFID_CHECK_MS) {  // phat hien long day / RC522 bi reset khi dang chay
+    static uint32_t resets = 0;
     lastCheck = now;
     bool ok = rfidAlive();
-    if (!ok) rfid.PCD_Init();
+    if (!ok) {
+      rfid.PCD_Init();
+    } else if (!rfidConfigured()) {
+      Serial.printf("[RC522] Bi reset (sut ap?) - TxControl 0x%02X, TMode 0x%02X - khoi tao lai (lan %lu)\n",
+                    rfid.PCD_ReadRegister(MFRC522::TxControlReg), rfid.PCD_ReadRegister(MFRC522::TModeReg),
+                    (unsigned long)++resets);
+      rfid.PCD_Init();
+    }
     if (ok != rfidOk) Serial.println(ok ? "[RC522] Da ket noi lai" : "[RC522] Mat ket noi - kiem tra day");
     rfidOk = ok;
   }
@@ -967,6 +988,18 @@ void loop() {
   }
 
   if (uint32_t t = wifi.poll(now)) accessLog.syncTime(t);  // gio NTP: dung ca khi chua co dien thoai nao ket noi
+
+  // Dong trang thai dinh ky: bat loi chi xuat hien sau mot thoi gian chay (vd. dau doc the ngung nhan)
+  static uint32_t lastStatus = 0;
+  if (now - lastStatus >= STATUS_LOG_MS) {
+    lastStatus = now;
+    Serial.printf("[TRANG THAI] %lus | RC522 %s | ban phim dang go %u so%s | ghep doi %s | dang ky %s | "
+                  "Wi-Fi %s | may chu %s | RAM %u (khoi lon nhat %u)\n",
+                  (unsigned long)(now / 1000), !rfidOk ? "MAT KET NOI" : rfidConfigured() ? "tot" : "SAI CAU HINH",
+                  pinLen, pinLocked ? " (BI KHOA)" : "", pend.active ? "CO" : "khong", job.cmd ? "CO" : "khong",
+                  wifi.connected() ? "co" : "KHONG", mqtt.connected() ? "co" : "KHONG",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+  }
 
   if (pairingMode) {
     if ((int32_t)(now - pairDeadline) >= 0) {

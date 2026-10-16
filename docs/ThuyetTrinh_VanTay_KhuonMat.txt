@@ -1,0 +1,286 @@
+﻿MỞ KHOÁ BẰNG VÂN TAY VÀ KHUÔN MẶT
+Tài liệu chuẩn bị slide và demo – Khoá cửa thông minh ESP32
+
+Tài liệu này dùng để làm slide và chuẩn bị demo cho hai chức năng: mở khoá bằng vân tay (cảm biến trên khoá) và mở khoá bằng khuôn mặt (nhận diện trên app điện thoại). Mọi thông số bên dưới lấy trực tiếp từ mã nguồn của dự án.
+
+======================================================================
+1. TỔNG QUAN HỆ THỐNG
+======================================================================
+Khoá cửa gồm bộ điều khiển ESP32 nối với cảm biến vân tay AS608, đầu đọc thẻ RC522, bàn phím 4×4, nút trong nhà và relay đóng/ngắt chốt khoá 12V. App điện thoại viết bằng Flutter, nói chuyện với khoá qua Bluetooth (BLE), Wi-Fi trong nhà hoặc máy chủ trung gian; mọi lệnh đều được mã hoá AES-GCM.
+  Thành phần | Vai trò trong 2 chức năng demo
+  ESP32 DevKit V1 | Bộ não của khoá: đọc vân tay, nhận lệnh mở từ app, điều khiển relay, ghi nhật ký
+  Cảm biến vân tay AS608 | Chụp ảnh vân tay, tạo và lưu mẫu, so khớp ngay trong cảm biến
+  Relay + chốt khoá 12V | Có điện thì chốt thụt vào (mở), mất điện thì chốt bật ra (khoá) – mở 5 giây rồi tự khoá
+  App Flutter (Android) | Quét và nhận diện khuôn mặt, quản lý vân tay, gửi lệnh mở đã mã hoá
+
+======================================================================
+2. CHỨC NĂNG MỞ KHOÁ BẰNG VÂN TAY
+======================================================================
+
+2.1. Chức năng
+--------------
+  - Đặt ngón tay đã đăng ký lên cảm biến: khoá mở 5 giây rồi tự khoá lại, đèn xanh sáng, còi kêu.
+  - Ngón tay lạ: khoá không mở, đèn đỏ nháy, còi báo, ghi vào nhật ký là "vân tay lạ".
+  - Đăng ký vân tay mới ngay trên app (chỉ tài khoản admin): app hướng dẫn từng bước "đặt tay – nhấc tay – đặt lại".
+  - Xoá từng vân tay hoặc xoá hết từ app.
+  - Lưu tối đa 32 vân tay (ID 1–32). Mỗi lần mở đều ghi nhật ký kèm ID vân tay và thời gian.
+  - Chống mở lặp: phải nhấc tay ra rồi đặt lại mới tính là một lần mở mới.
+
+2.2. Công nghệ chính
+--------------------
+  Hạng mục | Công nghệ | Ghi chú
+  Cảm biến | AS608 – cảm biến vân tay quang học | Tự chụp ảnh, trích đặc trưng, lưu mẫu và so khớp bên trong cảm biến
+  Kết nối | UART (Serial2 của ESP32), 57.600 baud | Chân RX16 / TX17, nguồn 3,3V
+  Thư viện | Adafruit Fingerprint Sensor Library 2.1.4 | Các lệnh getImage, image2Tz, createModel, storeModel, fingerSearch, deleteModel
+  Nơi lưu mẫu | Bộ nhớ flash của AS608 (32 vị trí) | Mẫu vân tay không rời khỏi cảm biến; ESP32 chỉ nhớ ID nào đang dùng
+  Danh sách quyền | NVS của ESP32 (mặt nạ 32 bit) | Chỉ vân tay có ID được bật mới mở được khoá
+  Điều khiển từ app | Lệnh quản trị mã hoá AES-GCM | ENROLL_FINGER, DELETE_FINGER, LIST_ACCESS – chỉ điện thoại admin
+
+2.3. Quy trình đăng ký vân tay
+------------------------------
+  1. Admin bấm "Thêm vân tay" trên app; app gửi lệnh ENROLL_FINGER đã mã hoá, khoá chọn một ID còn trống.
+  2. Đặt tay lần 1: AS608 chụp ảnh (getImage) và chuyển thành bộ đặc trưng thứ nhất (image2Tz vào bộ đệm 1). Nếu vân tay này đã có thì báo "đã đăng ký".
+  3. Khoá gửi tiến trình về app: "Nhấc ngón tay ra…", chờ tới khi cảm biến không còn thấy ngón tay.
+  4. Đặt lại cùng ngón tay lần 2: chụp và trích đặc trưng vào bộ đệm 2.
+  5. Ghép hai bộ đặc trưng thành một mẫu (createModel) và lưu vào ID đã chọn (storeModel).
+  6. Khoá bật ID đó trong danh sách quyền và trả kết quả về app. Mỗi bước có giới hạn 15 giây.
+
+2.4. Quy trình nhận diện và mở khoá
+-----------------------------------
+  1. Cứ 300 ms khoá hỏi cảm biến có ngón tay không (getImage).
+  2. Có ngón tay: trích đặc trưng (image2Tz). Ảnh nhoè thì nháy đèn đỏ ngắn, nhắc đặt lại, không ghi nhật ký.
+  3. Tìm mẫu khớp trong toàn bộ 32 mẫu đã lưu (fingerSearch – so khớp 1:N trong cảm biến).
+  4. Khớp và ID đó đang được cấp quyền: đóng relay 5 giây (chốt mở), đèn xanh, còi, ghi nhật ký "Mở bằng vân tay #ID".
+  5. Không khớp: đèn đỏ, còi báo, ghi nhật ký "vân tay lạ".
+  6. Chờ nhấc tay ra mới đọc lần tiếp theo.
+
+2.5. Điểm bảo mật
+-----------------
+  - Mẫu vân tay nằm trong cảm biến, không gửi lên điện thoại hay internet.
+  - Chỉ điện thoại admin mới thêm/xoá vân tay được, qua kênh mã hoá AES-GCM có mã thử thách (nonce) chống phát lại.
+  - Mọi lần mở và lần bị từ chối đều có nhật ký để tra cứu.
+
+======================================================================
+3. CHỨC NĂNG MỞ KHOÁ BẰNG KHUÔN MẶT
+======================================================================
+
+3.1. Chức năng
+--------------
+  - Đăng ký khuôn mặt trong app: Quản lý truy cập → Mở khoá bằng khuôn mặt → Đăng ký. App chụp 5 ảnh.
+  - Mở cửa: bấm "Mở cửa bằng khuôn mặt" → nhìn camera, nháy mắt → app chụp 2 ảnh, so khớp → khớp thì gửi lệnh mở.
+  - Chống dùng ảnh in/ảnh trên màn hình: bắt buộc nháy mắt trước khi chụp.
+  - Vào trang quản lý (thêm vân tay, thẻ, PIN…) cũng phải quét khuôn mặt.
+  - Toàn bộ nhận diện chạy trên điện thoại, không cần internet; chỉ lưu vector đặc trưng, không lưu ảnh.
+
+3.2. Công nghệ chính
+--------------------
+  Hạng mục | Công nghệ | Vai trò
+  Nền tảng app | Flutter (Dart), Android | Giao diện, camera, gửi lệnh tới khoá
+  Camera | Gói camera, camera trước, luồng ảnh NV21 | Lấy khung hình liên tục để kiểm tra người thật, rồi chụp ảnh nét để nhận diện
+  Phát hiện khuôn mặt | Google ML Kit Face Detection (chạy trên máy) | Tìm khuôn mặt, vị trí 2 mắt, xác suất mắt mở, góc quay đầu
+  Nhận diện khuôn mặt | Mô hình FaceNet-512 (Inception-ResNet-v1, huấn luyện trên VGGFace2), định dạng TensorFlow Lite | Biến ảnh khuôn mặt 160×160 thành vector đặc trưng 512 chiều
+  Chạy mô hình | tflite_flutter, 4 luồng CPU | Suy luận ngay trên điện thoại, không gửi ảnh đi đâu
+  Xử lý ảnh | Thư viện image (Dart), chạy trong Isolate | Xoay ảnh theo EXIF, căn thẳng mắt, cắt và thu nhỏ khuôn mặt
+  Lưu mẫu | flutter_secure_storage (mã hoá bằng Android Keystore) | Lưu vector 512 chiều đã đăng ký
+  Bảo vệ việc đăng ký | local_auth (vân tay / khuôn mặt của máy) | Phải qua sinh trắc học của điện thoại mới được đăng ký hoặc xoá khuôn mặt
+
+3.3. Quy trình nhận diện (pipeline)
+-----------------------------------
+  1. Kiểm tra người thật (liveness) trên luồng camera: mở mắt → nháy mắt → mở mắt lại (xem 3.4).
+  2. Chụp ảnh, giải mã và xoay đúng chiều theo EXIF (ảnh camera trước thường bị xoay/lật).
+  3. ML Kit tìm khuôn mặt lớn nhất trong ảnh.
+  4. Kiểm tra chất lượng: khuôn mặt rộng ít nhất 25% bề rộng ảnh, quay/ngẩng đầu không quá 15°, mắt mở (xác suất ≥ 0,4). Không đạt thì nhắc người dùng.
+  5. Căn thẳng: xoay ảnh để đường nối hai mắt nằm ngang.
+  6. Cắt vùng vuông quanh mặt rộng gấp 1,3 lần khung mặt, thu về 160×160 điểm ảnh.
+  7. Chuẩn hoá ảnh (prewhiten): trừ trung bình, chia độ lệch chuẩn của chính ảnh → ít phụ thuộc độ sáng.
+  8. FaceNet-512 tạo vector 512 chiều, chuẩn hoá về độ dài 1 (chuẩn L2).
+
+3.4. Chống giả mạo bằng ảnh (liveness)
+--------------------------------------
+  - Dùng xác suất mắt mở mà ML Kit trả về cho từng khung hình.
+  - Bước 1 – mở mắt: cả hai mắt > 0,7. Bước 2 – nháy: cả hai mắt < 0,3. Bước 3 – mở lại: > 0,7.
+  - Chỉ đúng một khuôn mặt trong khung hình; quay đầu quá 20° thì yêu cầu nhìn thẳng.
+  - Ảnh in hoặc ảnh tĩnh trên màn hình không nháy mắt được nên bị chặn ở bước 2.
+
+3.5. So khớp và ngưỡng
+----------------------
+Khi đăng ký, app lấy trung bình 5 vector rồi chuẩn hoá lại thành một mẫu. Khi mở cửa, app chụp 2 ảnh, tính khoảng cách Euclid từ mẫu tới từng ảnh và lấy ảnh khớp nhất. Khoảng cách nhỏ hơn ngưỡng thì coi là cùng một người. App đang dùng mức Cao (ngưỡng 0,65).
+  Mức an toàn | Ngưỡng | Chính chủ được nhận | Người lạ ngẫu nhiên lọt | Người giống nhất lọt
+  Cơ bản | 0,75 | ~96% | 0,03% | ~1%
+  Cao (đang dùng) | 0,65 | ~83% | 0% | ~0,1%
+  Rất cao | 0,55 | ~53% | 0% | ~0,01%
+[Lưu ý] Số đo trên bộ ảnh LFW (217 người), ghi trong mã nguồn dự án faceid. Ảnh LFW chụp ở nhiều thời điểm và ánh sáng khác nhau nên khó hơn thực tế; trên điện thoại (cùng camera, vừa đăng ký) chính chủ thường được nhận tốt hơn. Nếu bị hỏi, nói rõ đây là số đo thử nghiệm, không phải cam kết.
+
+3.6. Từ "khuôn mặt khớp" tới "cửa mở"
+-------------------------------------
+  1. Khuôn mặt khớp → app mới đọc khoá AES riêng của điện thoại (cấp lúc ghép đôi bằng trao đổi khoá X25519).
+  2. App xin khoá một mã thử thách dùng một lần (nonce 8 byte).
+  3. App mã hoá lệnh UNLOCK bằng AES-GCM, kèm nonce và bộ đếm tăng dần (chống phát lại gói cũ).
+  4. Khoá giải mã, kiểm tra nonce, bộ đếm, quyền của điện thoại → đóng relay 5 giây → ghi nhật ký "Mở bằng app · điện thoại #ID".
+
+3.7. Riêng tư và bảo mật
+------------------------
+  - Ảnh khuôn mặt chỉ nằm trong bộ nhớ tạm khi xử lý; chỉ vector 512 số được lưu, mã hoá trong kho bảo mật của máy.
+  - Khoá cửa không biết gì về khuôn mặt: nó chỉ nhận lệnh đã mã hoá. Không có điện thoại đã ghép đôi thì khuôn mặt cũng không mở được cửa.
+  - Muốn đăng ký hoặc xoá khuôn mặt phải qua sinh trắc học của điện thoại, nên người cầm máy đang mở khoá không tự thêm mặt mình được.
+
+======================================================================
+4. SO SÁNH HAI PHƯƠNG THỨC
+======================================================================
+  Tiêu chí | Vân tay | Khuôn mặt
+  Xử lý ở đâu | Trong cảm biến AS608 trên khoá | Trên điện thoại (app)
+  Cần điện thoại | Không | Có
+  Mẫu lưu ở đâu | Flash của AS608 | Kho bảo mật của điện thoại (vector 512 chiều)
+  Chống giả mạo | Hạn chế (cảm biến quang học có thể bị khuôn vân tay giả) | Bắt nháy mắt, chặn được ảnh tĩnh
+  Số người | Tối đa 32 vân tay | Mỗi điện thoại một khuôn mặt chủ máy
+  Ưu điểm | Nhanh, không cần mang theo gì | Không cần chạm, kết hợp được mở từ xa
+  Thời gian mở | Dưới 1 giây sau khi đặt tay | Vài giây (nháy mắt + chụp + gửi lệnh)
+
+Hạn chế và hướng phát triển
+---------------------------
+  - Vân tay: AS608 là cảm biến quang học, có thể bị khuôn silicon đánh lừa → hướng phát triển: cảm biến điện dung có phát hiện ngón tay sống.
+  - Khuôn mặt: video quay sẵn có thể vượt bước nháy mắt → hướng phát triển: thử thách ngẫu nhiên (quay trái/phải, mỉm cười) hoặc camera đo chiều sâu.
+  - Khuôn mặt phụ thuộc ánh sáng: thiếu sáng dễ từ chối chính chủ → chỉnh mức ngưỡng hoặc đăng ký lại ở nơi đủ sáng.
+
+======================================================================
+5. DÀN Ý SLIDE GỢI Ý (13 SLIDE, ~12–15 PHÚT)
+======================================================================
+
+>> Slide 1 – Tiêu đề
+  - Khoá cửa thông minh: mở bằng vân tay và khuôn mặt
+  - Tên nhóm, thành viên, giảng viên hướng dẫn
+Hình nên có: Ảnh thật của khoá đã lắp
+Lời nói gợi ý: Giới thiệu nhóm và đề tài trong 20 giây.
+
+>> Slide 2 – Vấn đề và mục tiêu
+  - Chìa khoá dễ mất, dễ sao chép
+  - Mục tiêu: mở bằng sinh trắc học, an toàn, có nhật ký
+Hình nên có: Biểu tượng chìa khoá → vân tay / khuôn mặt
+Lời nói gợi ý: Nêu lý do chọn sinh trắc học thay chìa khoá.
+
+>> Slide 3 – Tổng quan hệ thống
+  - ESP32 + AS608 + relay + chốt 12V
+  - App Flutter ↔ khoá (BLE / Wi-Fi), lệnh mã hoá AES-GCM
+Hình nên có: Sơ đồ khối hệ thống
+Lời nói gợi ý: Chỉ rõ vân tay xử lý trên khoá, khuôn mặt xử lý trên điện thoại.
+
+>> Slide 4 – Vân tay – phần cứng và công nghệ
+  - Cảm biến quang học AS608, UART 57.600 baud
+  - Thư viện Adafruit Fingerprint
+  - Mẫu lưu trong cảm biến, tối đa 32
+Hình nên có: Ảnh AS608 và sơ đồ nối dây với ESP32
+Lời nói gợi ý: Nhấn mạnh: mẫu vân tay không rời cảm biến.
+
+>> Slide 5 – Vân tay – đăng ký
+  - Đặt tay 2 lần → ghép mẫu → lưu vào ID trống
+  - Điều khiển từ app bằng lệnh mã hoá, chỉ admin
+Hình nên có: Lưu đồ đăng ký (mục 2.3)
+Lời nói gợi ý: Giải thích vì sao phải đặt tay hai lần: ghép hai ảnh cho mẫu ổn định.
+
+>> Slide 6 – Vân tay – nhận diện và mở khoá
+  - Đọc mỗi 300 ms → trích đặc trưng → tìm mẫu 1:N
+  - Khớp: mở 5 giây, ghi nhật ký; lạ: đèn đỏ, còi
+Hình nên có: Lưu đồ nhận diện (mục 2.4)
+Lời nói gợi ý: Nói thời gian phản hồi dưới 1 giây.
+
+>> Slide 7 – Khuôn mặt – công nghệ
+  - Flutter + camera trước
+  - Google ML Kit phát hiện khuôn mặt
+  - FaceNet-512 (TensorFlow Lite) chạy trên máy
+Hình nên có: Logo/biểu tượng các công nghệ, xếp theo luồng
+Lời nói gợi ý: Nhấn mạnh: không cần internet, không gửi ảnh đi.
+
+>> Slide 8 – Khuôn mặt – chống ảnh giả
+  - Mở mắt (>0,7) → nháy (<0,3) → mở lại
+  - Kiểm tra chất lượng ảnh trước khi nhận diện
+Hình nên có: Ảnh chụp màn hình 3 bước trên app
+Lời nói gợi ý: Có thể demo cầm ảnh in để thấy bị chặn.
+
+>> Slide 9 – Khuôn mặt – trích đặc trưng
+  - Căn mắt → cắt 1,3× → 160×160 → chuẩn hoá
+  - FaceNet-512 → vector 512 chiều
+Hình nên có: Hình pipeline từ ảnh gốc tới vector
+Lời nói gợi ý: Giải thích vector như "dấu vân tay số" của khuôn mặt.
+
+>> Slide 10 – Khuôn mặt – so khớp và ngưỡng
+  - Đăng ký: trung bình 5 ảnh
+  - Mở cửa: khoảng cách Euclid < 0,65
+  - Bảng 3 mức an toàn
+Hình nên có: Bảng ngưỡng (mục 3.5)
+Lời nói gợi ý: Nói rõ đánh đổi: ngưỡng chặt thì an toàn hơn nhưng dễ từ chối chính chủ.
+
+>> Slide 11 – Từ khuôn mặt khớp tới cửa mở
+  - Nonce dùng 1 lần + bộ đếm
+  - AES-GCM → khoá kiểm tra → relay 5 giây
+Hình nên có: Sơ đồ tuần tự app ↔ khoá
+Lời nói gợi ý: Giải thích vì sao kẻ nghe lén không mở được cửa.
+
+>> Slide 12 – So sánh, hạn chế, hướng phát triển
+  - Bảng so sánh (mục 4)
+  - Hạn chế và hướng phát triển
+Hình nên có: Bảng 2 cột
+Lời nói gợi ý: Chủ động nói hạn chế trước khi bị hỏi.
+
+>> Slide 13 – Demo và kết luận
+  - Demo vân tay → demo khuôn mặt → mở nhật ký
+  - Kết luận + hỏi đáp
+Hình nên có: Video dự phòng nếu demo trục trặc
+Lời nói gợi ý: Chạy đúng kịch bản ở mục 6.
+
+======================================================================
+6. KỊCH BẢN DEMO
+======================================================================
+
+Chuẩn bị trước buổi thuyết trình
+--------------------------------
+  - Cấp nguồn adapter 12V cho khoá, kiểm tra chốt thụt/thò bằng nút trong nhà.
+  - Điện thoại đã ghép đôi (admin), đã đăng ký ít nhất 1 vân tay và khuôn mặt, pin trên 50%.
+  - Đứng ở chỗ đủ sáng khi quét mặt. Bật Bluetooth (hoặc dùng cùng Wi-Fi với khoá).
+  - Chuẩn bị một ngón tay chưa đăng ký và một ảnh khuôn mặt in/trên màn hình để demo trường hợp bị từ chối.
+  - Quay sẵn một video demo thành công làm phương án dự phòng.
+
+Trình tự demo (~3 phút)
+-----------------------
+  1. Vân tay đúng: đặt ngón đã đăng ký → chốt thụt vào, đèn xanh, còi → 5 giây sau tự khoá.
+  2. Vân tay lạ: đặt ngón chưa đăng ký → đèn đỏ, còi báo, cửa không mở.
+  3. (Nếu còn thời gian) Đăng ký vân tay mới trên app: Quản lý truy cập → Thêm vân tay → đặt tay 2 lần.
+  4. Khuôn mặt: mở app → vào khoá → "Mở cửa bằng khuôn mặt" → nhìn camera, nháy mắt → cửa mở.
+  5. Ảnh giả: đưa ảnh khuôn mặt trước camera → app đứng ở bước "Hãy nháy mắt", không mở cửa.
+  6. Mở Nhật ký trên app: thấy lần mở bằng vân tay, lần vân tay lạ và lần mở bằng app.
+[Lưu ý] Thử trước bước 5 với đúng ảnh sẽ dùng. Video quay sẵn có thể vượt bước nháy mắt (xem phần hạn chế), nên chỉ demo bằng ảnh tĩnh.
+
+======================================================================
+7. MẸO LÀM SLIDE
+======================================================================
+  - Mỗi slide một ý, tối đa khoảng 6 dòng, chữ từ 24pt trở lên.
+  - Ưu tiên sơ đồ khối, lưu đồ và ảnh thật thay cho đoạn văn dài; chi tiết để trong lời nói.
+  - Dùng một bộ màu thống nhất: ví dụ màu xanh cho "mở/thành công", màu đỏ cho "từ chối".
+  - Đánh số slide để người nghe hỏi lại dễ.
+  - Đặt demo gần cuối, ngay trước kết luận; luôn có video dự phòng.
+  - Tính khoảng 1 phút cho mỗi slide; tập nói trước ít nhất một lần với đồng hồ.
+  - Bảng số liệu (ngưỡng, so sánh) nên tô đậm dòng đang dùng để người nghe nhìn ngay.
+
+======================================================================
+8. CÂU HỎI CÓ THỂ BỊ HỎI
+======================================================================
+
+>> Mẫu vân tay lưu ở đâu, có bị lộ không?
+Mẫu lưu trong bộ nhớ của cảm biến AS608 và việc so khớp diễn ra ngay trong cảm biến. ESP32 chỉ biết ID nào được phép mở; mẫu không gửi lên điện thoại hay internet.
+
+>> Tại sao nhận diện khuôn mặt trên điện thoại mà không phải trên khoá?
+ESP32 không đủ bộ nhớ và sức tính để chạy mô hình FaceNet (24 MB). Xử lý trên điện thoại vừa nhanh vừa riêng tư: ảnh không rời khỏi máy, chỉ lưu vector.
+
+>> Dùng ảnh hoặc video có qua mặt được không?
+Ảnh tĩnh bị chặn vì phải nháy mắt. Video quay sẵn có thể vượt qua – đây là hạn chế đã biết; hướng cải thiện là thử thách ngẫu nhiên hoặc camera đo chiều sâu.
+
+>> Độ chính xác bao nhiêu?
+Ở mức Cao (ngưỡng 0,65), thử trên bộ ảnh LFW: chính chủ được nhận khoảng 83%, người lạ ngẫu nhiên không lọt, người giống nhất lọt khoảng 0,1%. Thực tế cùng camera thường tốt hơn.
+
+>> Vì sao chọn FaceNet-512?
+Ở cùng mức "người giống nhất lọt 0,3%", FaceNet-512 nhận đúng chính chủ khoảng 90%, so với khoảng 70% của MobileFaceNet (số đo của dự án faceid).
+
+>> Nếu mất điện thoại thì sao?
+Khuôn mặt chỉ là bước xác nhận trên app; muốn mở còn cần khoá AES riêng trong điện thoại. Admin có thể thu hồi điện thoại bị mất trong trang Quản lý truy cập.
+
+>> Kẻ nghe lén Bluetooth có mở được cửa không?
+Không. Lệnh được mã hoá AES-GCM bằng khoá riêng của điện thoại, kèm mã thử thách dùng một lần và bộ đếm tăng dần, nên gói nghe lén không giải mã được và gửi lại cũng bị từ chối.
