@@ -75,6 +75,8 @@ const uint32_t ENROLL_FINGER_MS = 15000;  // cho moi lan dat tay
 // Moi lan do chan loop() vai chuc ms (AS608 ~50ms, RC522 ~30ms). Neu ban phim bi sot phim thi tang 2 so nay.
 const uint32_t FP_POLL_MS   = 300;
 const uint32_t RFID_POLL_MS = 100;
+const uint32_t STATUS_LOG_MS = 30000; // in 1 dong trang thai len Serial moi 30 giay (de bat loi chay lau)
+const uint32_t RFID_CHECK_MS = 2000; // kiem tra RC522 con song va con dung cau hinh (bi reset do sut ap thi khoi tao lai)
 const uint32_t SAME_CARD_MS = 2000;  // bo qua cung 1 the quet lien tuc
 
 // ---- Phan hoi ----
